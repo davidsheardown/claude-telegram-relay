@@ -141,6 +141,7 @@ REASON: [Why you decided this]
     const proc = spawn([CLAUDE_PATH, "-p", prompt, "--output-format", "text"], {
       stdout: "pipe",
       stderr: "pipe",
+      env: { ...process.env, CLAUDECODE: "" },
     });
 
     const output = await new Response(proc.stdout).text();

@@ -205,7 +205,7 @@ async function callClaude(
       cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
-        // Pass through any env vars Claude might need
+        CLAUDECODE: "", // Allow nested Claude Code invocation
       },
     });
 
