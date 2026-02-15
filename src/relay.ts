@@ -187,14 +187,18 @@ async function callClaude(
   prompt: string,
   options?: { resume?: boolean; imagePath?: string }
 ): Promise<string> {
-  const args = [CLAUDE_PATH, "-p", prompt];
+  const args = [CLAUDE_PATH];
+
+  // Flags must come before -p since -p consumes the rest as prompt
+  args.push("--output-format", "text");
+  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase");
 
   // Resume previous session if available and requested
   if (options?.resume && session.sessionId) {
     args.push("--resume", session.sessionId);
   }
 
-  args.push("--output-format", "text");
+  args.push("-p", prompt);
 
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
@@ -202,7 +206,7 @@ async function callClaude(
     const proc = spawn(args, {
       stdout: "pipe",
       stderr: "pipe",
-      cwd: PROJECT_DIR || undefined,
+      cwd: PROJECT_DIR || PROJECT_ROOT,
       env: {
         ...process.env,
         CLAUDECODE: "", // Allow nested Claude Code invocation
@@ -422,6 +426,7 @@ function buildPrompt(
 
   const parts = [
     "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
+    "You have access to WebSearch and WebFetch tools. USE THEM whenever the user asks about current events, weather, news, prices, or anything requiring up-to-date information. Do not say you lack internet access — you DO have web search. Use it proactively.",
   ];
 
   if (USER_NAME) parts.push(`You are speaking with ${USER_NAME}.`);
