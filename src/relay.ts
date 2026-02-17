@@ -8,18 +8,18 @@
  */
 
 import { Bot, Context } from "grammy";
-import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
-import { join, dirname } from "path";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { join } from "path";
 import { transcribe } from "./transcribe.ts";
 import {
+  supabase,
+  callClaude,
+  buildPrompt,
+  saveMessage,
   processMemoryIntents,
   getMemoryContext,
   getRelevantContext,
-} from "./memory.ts";
-
-const PROJECT_ROOT = dirname(dirname(import.meta.path));
+} from "./shared.ts";
 
 // ============================================================
 // CONFIGURATION
@@ -27,40 +27,11 @@ const PROJECT_ROOT = dirname(dirname(import.meta.path));
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
-const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
 
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
-
-// Session tracking for conversation continuity
-const SESSION_FILE = join(RELAY_DIR, "session.json");
-
-interface SessionState {
-  sessionId: string | null;
-  lastActivity: string;
-}
-
-// ============================================================
-// SESSION MANAGEMENT
-// ============================================================
-
-async function loadSession(): Promise<SessionState> {
-  try {
-    const content = await readFile(SESSION_FILE, "utf-8");
-    return JSON.parse(content);
-  } catch {
-    return { sessionId: null, lastActivity: new Date().toISOString() };
-  }
-}
-
-async function saveSession(state: SessionState): Promise<void> {
-  await writeFile(SESSION_FILE, JSON.stringify(state, null, 2));
-}
-
-let session = await loadSession();
 
 // ============================================================
 // LOCK FILE (prevent multiple instances)
@@ -75,7 +46,7 @@ async function acquireLock(): Promise<boolean> {
     if (existingLock) {
       const pid = parseInt(existingLock);
       try {
-        process.kill(pid, 0); // Check if process exists
+        process.kill(pid, 0);
         console.log(`Another instance running (PID: ${pid})`);
         return false;
       } catch {
@@ -127,33 +98,6 @@ if (!BOT_TOKEN) {
 await mkdir(TEMP_DIR, { recursive: true });
 await mkdir(UPLOADS_DIR, { recursive: true });
 
-// ============================================================
-// SUPABASE (optional — only if configured)
-// ============================================================
-
-const supabase: SupabaseClient | null =
-  process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
-    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-    : null;
-
-async function saveMessage(
-  role: string,
-  content: string,
-  metadata?: Record<string, unknown>
-): Promise<void> {
-  if (!supabase) return;
-  try {
-    await supabase.from("messages").insert({
-      role,
-      content,
-      channel: "telegram",
-      metadata: metadata || {},
-    });
-  } catch (error) {
-    console.error("Supabase save error:", error);
-  }
-}
-
 // Acquire lock
 if (!(await acquireLock())) {
   console.error("Could not acquire lock. Another instance may be running.");
@@ -169,7 +113,6 @@ const bot = new Bot(BOT_TOKEN);
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id.toString();
 
-  // If ALLOWED_USER_ID is set, enforce it
   if (ALLOWED_USER_ID && userId !== ALLOWED_USER_ID) {
     console.log(`Unauthorized: ${userId}`);
     await ctx.reply("This bot is private.");
@@ -180,63 +123,26 @@ bot.use(async (ctx, next) => {
 });
 
 // ============================================================
-// CORE: Call Claude CLI
+// COMMANDS
 // ============================================================
 
-async function callClaude(
-  prompt: string,
-  options?: { resume?: boolean; imagePath?: string }
-): Promise<string> {
-  const args = [CLAUDE_PATH];
-
-  // Flags must come before -p since -p consumes the rest as prompt
-  args.push("--output-format", "text");
-  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase,mcp__google-calendar");
-
-  // Resume previous session if available and requested
-  if (options?.resume && session.sessionId) {
-    args.push("--resume", session.sessionId);
-  }
-
-  args.push("-p", prompt);
-
-  console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
+// /call command — trigger an outbound phone call
+bot.command("call", async (ctx) => {
+  const message = ctx.message?.text?.replace("/call", "").trim();
 
   try {
-    const proc = spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
-      cwd: PROJECT_DIR || PROJECT_ROOT,
-      env: {
-        ...process.env,
-        CLAUDECODE: "", // Allow nested Claude Code invocation
-      },
-    });
+    const { makeOutboundCall } = await import("./phone.ts");
 
-    const output = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-
-    const exitCode = await proc.exited;
-
-    if (exitCode !== 0) {
-      console.error("Claude error:", stderr);
-      return `Error: ${stderr || "Claude exited with code " + exitCode}`;
-    }
-
-    // Extract session ID from output if present (for --resume)
-    const sessionMatch = output.match(/Session ID: ([a-f0-9-]+)/i);
-    if (sessionMatch) {
-      session.sessionId = sessionMatch[1];
-      session.lastActivity = new Date().toISOString();
-      await saveSession(session);
-    }
-
-    return output.trim();
+    const reason = message || "Hey, you asked me to call you!";
+    await makeOutboundCall(reason);
+    await ctx.reply("Calling you now...");
   } catch (error) {
-    console.error("Spawn error:", error);
-    return `Error: Could not run Claude CLI`;
+    console.error("Outbound call error:", error);
+    await ctx.reply(
+      "Could not initiate call. Make sure the phone service is running and Twilio is configured."
+    );
   }
-}
+});
 
 // ============================================================
 // MESSAGE HANDLERS
@@ -249,21 +155,19 @@ bot.on("message:text", async (ctx) => {
 
   await ctx.replyWithChatAction("typing");
 
-  await saveMessage("user", text);
+  await saveMessage("user", text, "telegram");
 
-  // Gather context: semantic search + facts/goals
   const [relevantContext, memoryContext] = await Promise.all([
     getRelevantContext(supabase, text),
     getMemoryContext(supabase),
   ]);
 
-  const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+  const enrichedPrompt = buildPrompt(text, "telegram", relevantContext, memoryContext);
   const rawResponse = await callClaude(enrichedPrompt, { resume: true });
 
-  // Parse and save any memory intents, strip tags from response
   const response = await processMemoryIntents(supabase, rawResponse);
 
-  await saveMessage("assistant", response);
+  await saveMessage("assistant", response, "telegram");
   await sendResponse(ctx, response);
 });
 
@@ -293,7 +197,7 @@ bot.on("message:voice", async (ctx) => {
       return;
     }
 
-    await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
+    await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`, "telegram");
 
     const [relevantContext, memoryContext] = await Promise.all([
       getRelevantContext(supabase, transcription),
@@ -302,13 +206,14 @@ bot.on("message:voice", async (ctx) => {
 
     const enrichedPrompt = buildPrompt(
       `[Voice message transcribed]: ${transcription}`,
+      "telegram",
       relevantContext,
       memoryContext
     );
     const rawResponse = await callClaude(enrichedPrompt, { resume: true });
     const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
-    await saveMessage("assistant", claudeResponse);
+    await saveMessage("assistant", claudeResponse, "telegram");
     await sendResponse(ctx, claudeResponse);
   } catch (error) {
     console.error("Voice error:", error);
@@ -322,12 +227,10 @@ bot.on("message:photo", async (ctx) => {
   await ctx.replyWithChatAction("typing");
 
   try {
-    // Get highest resolution photo
     const photos = ctx.message.photo;
     const photo = photos[photos.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
 
-    // Download the image
     const timestamp = Date.now();
     const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
 
@@ -337,19 +240,17 @@ bot.on("message:photo", async (ctx) => {
     const buffer = await response.arrayBuffer();
     await writeFile(filePath, Buffer.from(buffer));
 
-    // Claude Code can see images via file path
     const caption = ctx.message.caption || "Analyze this image.";
     const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
-    await saveMessage("user", `[Image]: ${caption}`);
+    await saveMessage("user", `[Image]: ${caption}`, "telegram");
 
     const claudeResponse = await callClaude(prompt, { resume: true });
 
-    // Cleanup after processing
     await unlink(filePath).catch(() => {});
 
     const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-    await saveMessage("assistant", cleanResponse);
+    await saveMessage("assistant", cleanResponse, "telegram");
     await sendResponse(ctx, cleanResponse);
   } catch (error) {
     console.error("Image error:", error);
@@ -378,14 +279,14 @@ bot.on("message:document", async (ctx) => {
     const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
     const prompt = `[File: ${filePath}]\n\n${caption}`;
 
-    await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
+    await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, "telegram");
 
     const claudeResponse = await callClaude(prompt, { resume: true });
 
     await unlink(filePath).catch(() => {});
 
     const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
-    await saveMessage("assistant", cleanResponse);
+    await saveMessage("assistant", cleanResponse, "telegram");
     await sendResponse(ctx, cleanResponse);
   } catch (error) {
     console.error("Document error:", error);
@@ -397,60 +298,7 @@ bot.on("message:document", async (ctx) => {
 // HELPERS
 // ============================================================
 
-// Load profile once at startup
-let profileContext = "";
-try {
-  profileContext = await readFile(join(PROJECT_ROOT, "config", "profile.md"), "utf-8");
-} catch {
-  // No profile yet — that's fine
-}
-
-const USER_NAME = process.env.USER_NAME || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-function buildPrompt(
-  userMessage: string,
-  relevantContext?: string,
-  memoryContext?: string
-): string {
-  const now = new Date();
-  const timeStr = now.toLocaleString("en-US", {
-    timeZone: USER_TIMEZONE,
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const parts = [
-    "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
-    "You have access to WebSearch and WebFetch tools. USE THEM whenever the user asks about current events, weather, news, prices, or anything requiring up-to-date information. Do not say you lack internet access — you DO have web search. Use it proactively.",
-  ];
-
-  if (USER_NAME) parts.push(`You are speaking with ${USER_NAME}.`);
-  parts.push(`Current time: ${timeStr}`);
-  if (profileContext) parts.push(`\nProfile:\n${profileContext}`);
-  if (memoryContext) parts.push(`\n${memoryContext}`);
-  if (relevantContext) parts.push(`\n${relevantContext}`);
-
-  parts.push(
-    "\nMEMORY MANAGEMENT:" +
-      "\nWhen the user shares something worth remembering, sets goals, or completes goals, " +
-      "include these tags in your response (they are processed automatically and hidden from the user):" +
-      "\n[REMEMBER: fact to store]" +
-      "\n[GOAL: goal text | DEADLINE: optional date]" +
-      "\n[DONE: search text for completed goal]"
-  );
-
-  parts.push(`\nUser: ${userMessage}`);
-
-  return parts.join("\n");
-}
-
 async function sendResponse(ctx: Context, response: string): Promise<void> {
-  // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
 
   if (response.length <= MAX_LENGTH) {
@@ -458,7 +306,6 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
     return;
   }
 
-  // Split long responses
   const chunks = [];
   let remaining = response;
 
@@ -468,7 +315,6 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
       break;
     }
 
-    // Try to split at a natural boundary
     let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
     if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
     if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
@@ -489,7 +335,6 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 
 console.log("Starting Claude Telegram Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
-console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 
 bot.start({
   onStart: () => {
