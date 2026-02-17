@@ -191,7 +191,7 @@ async function callClaude(
 
   // Flags must come before -p since -p consumes the rest as prompt
   args.push("--output-format", "text");
-  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase");
+  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase,mcp__google-calendar");
 
   // Resume previous session if available and requested
   if (options?.resume && session.sessionId) {
