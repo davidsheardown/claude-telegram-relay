@@ -1,8 +1,13 @@
 /**
  * Morning Briefing Example
  *
- * Sends a daily summary via Telegram at a scheduled time.
+ * Sends a daily summary via Telegram and/or phone call.
  * Customize this for your own morning routine.
+ *
+ * Set BRIEFING_DELIVERY in .env:
+ *   "telegram" (default) — Telegram message only
+ *   "phone"              — Phone call only
+ *   "both"               — Telegram message + phone call
  *
  * Schedule this with:
  * - macOS: launchd (see daemon/morning-briefing.plist)
@@ -14,6 +19,7 @@
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
+const DELIVERY = (process.env.BRIEFING_DELIVERY || "telegram").toLowerCase();
 
 // ============================================================
 // TELEGRAM HELPER
@@ -148,10 +154,22 @@ async function buildBriefing(): Promise<string> {
     console.error("News fetch failed:", e);
   }
 
-  // Footer
+  // Footer (only for Telegram)
   sections.push("---\n_Reply to chat or say \"call me\" for voice briefing_");
 
   return sections.join("\n");
+}
+
+/** Strip markdown and emojis for spoken delivery. */
+function toSpoken(text: string): string {
+  return text
+    .replace(/\*\*/g, "")           // bold
+    .replace(/_([^_]+)_/g, "$1")    // italic
+    .replace(/[🌅☀️📅📧🎯🤖]/g, "") // emojis
+    .replace(/^-\s/gm, "")          // bullet dashes
+    .replace(/---/g, "")            // horizontal rules
+    .replace(/\n{3,}/g, "\n\n")     // collapse blank lines
+    .trim();
 }
 
 // ============================================================
@@ -159,24 +177,43 @@ async function buildBriefing(): Promise<string> {
 // ============================================================
 
 async function main() {
-  console.log("Building morning briefing...");
-
-  if (!BOT_TOKEN || !CHAT_ID) {
-    console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
-    process.exit(1);
-  }
+  console.log(`Building morning briefing (delivery: ${DELIVERY})...`);
 
   const briefing = await buildBriefing();
+  let ok = true;
 
-  console.log("Sending briefing...");
-  const success = await sendTelegram(briefing);
-
-  if (success) {
-    console.log("Briefing sent successfully!");
-  } else {
-    console.error("Failed to send briefing");
-    process.exit(1);
+  // Telegram delivery
+  if (DELIVERY === "telegram" || DELIVERY === "both") {
+    if (!BOT_TOKEN || !CHAT_ID) {
+      console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
+      ok = false;
+    } else {
+      console.log("Sending briefing via Telegram...");
+      const sent = await sendTelegram(briefing);
+      if (sent) {
+        console.log("Telegram briefing sent!");
+      } else {
+        console.error("Telegram delivery failed");
+        ok = false;
+      }
+    }
   }
+
+  // Phone delivery
+  if (DELIVERY === "phone" || DELIVERY === "both") {
+    try {
+      const { makeOutboundCall } = await import("../src/phone.ts");
+      const spoken = toSpoken(briefing);
+      console.log("Calling with briefing...");
+      await makeOutboundCall(spoken);
+      console.log("Phone briefing initiated!");
+    } catch (error) {
+      console.error("Phone delivery failed:", error);
+      ok = false;
+    }
+  }
+
+  if (!ok) process.exit(1);
 }
 
 main();
