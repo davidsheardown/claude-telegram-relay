@@ -22,7 +22,7 @@ export function greeting(actionUrl: string): string {
 export function sayAndRecord(text: string, actionUrl: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Amy-Neural">${escapeXml(text)}</Say>
+  <Say voice="Polly.Amy-Generative">${escapeXml(text)}</Say>
   <Record
     action="${escapeXml(actionUrl)}"
     maxLength="120"
@@ -30,7 +30,7 @@ export function sayAndRecord(text: string, actionUrl: string): string {
     trim="trim-silence"
     timeout="3"
   />
-  <Say voice="Polly.Amy-Neural">I didn't hear anything. Talk to you later!</Say>
+  <Say voice="Polly.Amy-Generative">I didn't hear anything. Talk to you later!</Say>
 </Response>`;
 }
 
@@ -38,7 +38,7 @@ export function sayAndRecord(text: string, actionUrl: string): string {
 export function sayAndHangup(text: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Amy-Neural">${escapeXml(text)}</Say>
+  <Say voice="Polly.Amy-Generative">${escapeXml(text)}</Say>
 </Response>`;
 }
 
