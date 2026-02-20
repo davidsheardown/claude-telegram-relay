@@ -95,7 +95,7 @@ export async function callClaude(
   const args = [CLAUDE_PATH];
 
   args.push("--output-format", "text");
-  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase,mcp__google-calendar");
+  args.push("--allowedTools", "WebSearch,WebFetch,mcp__supabase,mcp__google-calendar,mcp__ms365-personal,mcp__ms365-business");
 
   if (options?.resume && session.sessionId) {
     args.push("--resume", session.sessionId);
@@ -178,12 +178,16 @@ export function buildPrompt(
       "You are a personal AI assistant on a phone call. Keep responses to 2-3 sentences max.",
       "Speak naturally as if talking, not texting. No markdown, no bullet points, no URLs, no code blocks.",
       "Use conversational language. Be warm and concise.",
-      "You have access to WebSearch and WebFetch tools. Use them for current events, weather, news, etc."
+      "You have access to WebSearch, WebFetch, Google Calendar, and Microsoft 365 tools. Use them for current events, weather, news, email, calendar, etc.",
+      "For email: ms365-personal tools access davidsheardown@hotmail.com (personal). ms365-business tools access david@codingandconsulting.com (work email + calendar).",
+      "Google Calendar tools access the personal Google calendar."
     );
   } else {
     parts.push(
       "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
-      "You have access to WebSearch and WebFetch tools. USE THEM whenever the user asks about current events, weather, news, prices, or anything requiring up-to-date information. Do not say you lack internet access — you DO have web search. Use it proactively."
+      "You have access to WebSearch, WebFetch, Google Calendar, and Microsoft 365 tools. USE THEM whenever the user asks about current events, weather, news, prices, email, calendar, or anything requiring up-to-date information. Do not say you lack internet access — you DO have web search. Use it proactively.",
+      "For email: ms365-personal tools access davidsheardown@hotmail.com (personal). ms365-business tools access david@codingandconsulting.com (work email + calendar).",
+      "Google Calendar tools access the personal Google calendar."
     );
   }
 
