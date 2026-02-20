@@ -13,12 +13,16 @@ const VOICE_PROVIDER = process.env.VOICE_PROVIDER || "";
 /**
  * Transcribe an audio buffer to text.
  * Returns empty string if no provider is configured.
+ * @param filename - hint for the audio format (e.g. "voice.wav", "voice.ogg")
  */
-export async function transcribe(audioBuffer: Buffer): Promise<string> {
+export async function transcribe(
+  audioBuffer: Buffer,
+  filename: string = "voice.ogg"
+): Promise<string> {
   if (!VOICE_PROVIDER) return "";
 
   if (VOICE_PROVIDER === "groq") {
-    return transcribeGroq(audioBuffer);
+    return transcribeGroq(audioBuffer, filename);
   }
 
   if (VOICE_PROVIDER === "local") {
@@ -29,11 +33,15 @@ export async function transcribe(audioBuffer: Buffer): Promise<string> {
   return "";
 }
 
-async function transcribeGroq(audioBuffer: Buffer): Promise<string> {
+async function transcribeGroq(
+  audioBuffer: Buffer,
+  filename: string = "voice.ogg"
+): Promise<string> {
   const Groq = (await import("groq-sdk")).default;
   const groq = new Groq(); // reads GROQ_API_KEY from env
 
-  const file = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
+  const mimeType = filename.endsWith(".wav") ? "audio/wav" : "audio/ogg";
+  const file = new File([audioBuffer], filename, { type: mimeType });
 
   const result = await groq.audio.transcriptions.create({
     file,

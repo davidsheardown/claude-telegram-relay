@@ -112,15 +112,29 @@ async function handleRecordingResponse(
 
   try {
     // Download recording (Twilio provides WAV when appending .wav)
+    // Add a short delay to ensure the recording is ready
+    await new Promise((r) => setTimeout(r, 1000));
+
     const audioResponse = await fetch(`${recordingUrl}.wav`, {
       headers: {
         Authorization: `Basic ${btoa(TWILIO_ACCOUNT_SID + ":" + TWILIO_AUTH_TOKEN)}`,
       },
     });
+
+    if (!audioResponse.ok) {
+      console.error(`Recording download failed: ${audioResponse.status}`);
+      return twimlResponse(
+        sayAndRecord(
+          "Sorry, I couldn't hear that properly. Could you say that again?",
+          `${BASE_URL}/voice/respond`
+        )
+      );
+    }
+
     const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
     // Transcribe with existing Groq Whisper pipeline
-    const transcription = await transcribe(audioBuffer);
+    const transcription = await transcribe(audioBuffer, "voice.wav");
 
     if (!transcription) {
       return twimlResponse(
