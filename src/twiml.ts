@@ -15,14 +15,14 @@ function escapeXml(text: string): string {
 
 /** Speak a greeting and start recording the caller's response. */
 export function greeting(actionUrl: string): string {
-  return sayAndRecord("Hey! What's on your mind?", actionUrl);
+  return sayAndRecord("Hey! What can I help with?", actionUrl);
 }
 
 /** Speak text, then record the caller's next response. */
 export function sayAndRecord(text: string, actionUrl: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Amy">${escapeXml(text)}</Say>
+  <Say voice="Polly.Emma-Generative">${escapeXml(text)}</Say>
   <Record
     action="${escapeXml(actionUrl)}"
     maxLength="120"
