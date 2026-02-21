@@ -1,34 +1,38 @@
 /**
- * Smart Check-in Example
+ * Smart Check-in
  *
- * A proactive assistant pattern where Claude decides:
- * - IF to check in (based on context)
- * - WHAT to say (based on goals, time, etc.)
+ * Runs every 30 minutes via PM2 cron. Claude decides whether to proactively
+ * message the user based on real context: goals, facts, calendar, and how
+ * long since the last conversation.
  *
- * Run periodically (e.g., every 30 minutes) and Claude
- * intelligently decides whether to message you.
+ * Limits: max 2 check-ins per day, minimum 2 hours between check-ins.
+ * Toggle on/off via Telegram: /checkin on | /checkin off | /checkin status
  *
- * Run: bun run examples/smart-checkin.ts
+ * PM2: pm2 start ... --cron "*/30 7-20 * * *" (7am–8pm UTC)
  */
 
-import { spawn } from "bun";
-import { readFile, writeFile } from "fs/promises";
-import { join } from "path";
+import { readFile, writeFile, mkdir } from "fs/promises";
+import { join, dirname } from "path";
+import { callClaude, buildPrompt, supabase, getMemoryContext } from "../src/shared.ts";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
-const STATE_FILE =
-  process.env.CHECKIN_STATE_FILE || "/tmp/checkin-state.json";
+const USER_TIMEZONE = process.env.USER_TIMEZONE || "Europe/London";
+const STATE_FILE = process.env.CHECKIN_STATE_FILE ||
+  join(process.env.HOME || "~", ".checkin-state.json");
+
+const MAX_CHECKINS_PER_DAY = 2;
+const MIN_HOURS_BETWEEN = 2;
 
 // ============================================================
-// STATE MANAGEMENT
+// STATE
 // ============================================================
 
 interface CheckinState {
-  lastMessageTime: string; // Last time user messaged
-  lastCheckinTime: string; // Last time we checked in
-  pendingItems: string[]; // Things to follow up on
+  enabled: boolean;
+  lastCheckinTime: string;
+  checkinsToday: number;
+  lastCheckinDate: string; // YYYY-MM-DD in user's timezone
 }
 
 async function loadState(): Promise<CheckinState> {
@@ -37,39 +41,82 @@ async function loadState(): Promise<CheckinState> {
     return JSON.parse(content);
   } catch {
     return {
-      lastMessageTime: new Date().toISOString(),
+      enabled: false,
       lastCheckinTime: "",
-      pendingItems: [],
+      checkinsToday: 0,
+      lastCheckinDate: "",
     };
   }
 }
 
 async function saveState(state: CheckinState): Promise<void> {
+  await mkdir(dirname(STATE_FILE), { recursive: true });
   await writeFile(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-// ============================================================
-// CONTEXT GATHERING
-// ============================================================
-
-async function getGoals(): Promise<string[]> {
-  // Load from your persistence layer
-  // Example: Supabase, JSON file, etc.
-  return ["Finish video edit by 5pm", "Review PR"];
-}
-
-async function getCalendarContext(): Promise<string> {
-  // What's coming up today?
-  return "Next event: Team call in 2 hours";
-}
-
-async function getLastActivity(): Promise<string> {
+export async function setEnabled(enabled: boolean): Promise<void> {
   const state = await loadState();
-  const lastMsg = new Date(state.lastMessageTime);
-  const now = new Date();
-  const hoursSince = (now.getTime() - lastMsg.getTime()) / (1000 * 60 * 60);
+  state.enabled = enabled;
+  await saveState(state);
+}
 
-  return `Last message: ${hoursSince.toFixed(1)} hours ago`;
+export async function getStatus(): Promise<{ enabled: boolean; lastCheckin: string; checkinsToday: number }> {
+  const state = await loadState();
+  return {
+    enabled: state.enabled,
+    lastCheckin: state.lastCheckinTime
+      ? new Date(state.lastCheckinTime).toLocaleString("en-GB", { timeZone: USER_TIMEZONE })
+      : "never",
+    checkinsToday: state.checkinsToday,
+  };
+}
+
+// ============================================================
+// RATE LIMITING
+// ============================================================
+
+function todayString(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: USER_TIMEZONE }); // YYYY-MM-DD
+}
+
+function canCheckin(state: CheckinState): { allowed: boolean; reason: string } {
+  if (!state.enabled) return { allowed: false, reason: "disabled" };
+
+  const today = todayString();
+  const checkinsToday = state.lastCheckinDate === today ? state.checkinsToday : 0;
+
+  if (checkinsToday >= MAX_CHECKINS_PER_DAY) {
+    return { allowed: false, reason: `already sent ${MAX_CHECKINS_PER_DAY} check-ins today` };
+  }
+
+  if (state.lastCheckinTime) {
+    const hoursSince = (Date.now() - new Date(state.lastCheckinTime).getTime()) / (1000 * 60 * 60);
+    if (hoursSince < MIN_HOURS_BETWEEN) {
+      return { allowed: false, reason: `last check-in was ${hoursSince.toFixed(1)}h ago (min ${MIN_HOURS_BETWEEN}h)` };
+    }
+  }
+
+  return { allowed: true, reason: "" };
+}
+
+// ============================================================
+// LAST USER MESSAGE TIME
+// ============================================================
+
+async function getHoursSinceLastUserMessage(): Promise<number | null> {
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase
+      .from("messages")
+      .select("created_at")
+      .eq("role", "user")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (!data?.length) return null;
+    return (Date.now() - new Date(data[0].created_at).getTime()) / (1000 * 60 * 60);
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================
@@ -83,10 +130,7 @@ async function sendTelegram(message: string): Promise<boolean> {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-        }),
+        body: JSON.stringify({ chat_id: CHAT_ID, text: message }),
       }
     );
     return response.ok;
@@ -96,140 +140,72 @@ async function sendTelegram(message: string): Promise<boolean> {
 }
 
 // ============================================================
-// CLAUDE DECISION
-// ============================================================
-
-async function askClaudeToDecide(): Promise<{
-  shouldCheckin: boolean;
-  message: string;
-}> {
-  const state = await loadState();
-  const goals = await getGoals();
-  const calendar = await getCalendarContext();
-  const activity = await getLastActivity();
-
-  const now = new Date();
-  const hour = now.getHours();
-  const timeContext =
-    hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
-
-  const prompt = `
-You are a proactive AI assistant. Decide if you should check in with the user.
-
-CONTEXT:
-- Current time: ${now.toLocaleTimeString()} (${timeContext})
-- ${activity}
-- Last check-in: ${state.lastCheckinTime || "Never"}
-- Active goals: ${goals.join(", ") || "None"}
-- Calendar: ${calendar}
-- Pending follow-ups: ${state.pendingItems.join(", ") || "None"}
-
-RULES:
-1. Don't be annoying - max 2-3 check-ins per day
-2. Only check in if there's a REASON (goal deadline, long silence, important event)
-3. Be brief and helpful, not intrusive
-4. Consider time of day (don't interrupt deep work hours)
-5. If nothing important, respond with NO_CHECKIN
-
-RESPOND IN THIS EXACT FORMAT:
-DECISION: YES or NO
-MESSAGE: [Your message if YES, or "none" if NO]
-REASON: [Why you decided this]
-`;
-
-  try {
-    const proc = spawn([CLAUDE_PATH, "-p", prompt, "--output-format", "text"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CLAUDECODE: "" },
-    });
-
-    const output = await new Response(proc.stdout).text();
-
-    // Parse Claude's response
-    const decisionMatch = output.match(/DECISION:\s*(YES|NO)/i);
-    const messageMatch = output.match(/MESSAGE:\s*(.+?)(?=\nREASON:|$)/is);
-    const reasonMatch = output.match(/REASON:\s*(.+)/is);
-
-    const shouldCheckin = decisionMatch?.[1]?.toUpperCase() === "YES";
-    const message = messageMatch?.[1]?.trim() || "";
-    const reason = reasonMatch?.[1]?.trim() || "";
-
-    console.log(`Decision: ${shouldCheckin ? "YES" : "NO"}`);
-    console.log(`Reason: ${reason}`);
-
-    return { shouldCheckin, message };
-  } catch (error) {
-    console.error("Claude error:", error);
-    return { shouldCheckin: false, message: "" };
-  }
-}
-
-// ============================================================
 // MAIN
 // ============================================================
 
 async function main() {
-  console.log("Running smart check-in...");
-
   if (!BOT_TOKEN || !CHAT_ID) {
-    console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
+    console.error("[smart-checkin] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
     process.exit(1);
   }
 
-  const { shouldCheckin, message } = await askClaudeToDecide();
+  const state = await loadState();
+  const { allowed, reason } = canCheckin(state);
 
-  if (shouldCheckin && message && message !== "none") {
-    console.log("Sending check-in...");
-    const success = await sendTelegram(message);
+  if (!allowed) {
+    console.log(`[smart-checkin] Skipping: ${reason}`);
+    return;
+  }
 
-    if (success) {
-      // Update state
-      const state = await loadState();
-      state.lastCheckinTime = new Date().toISOString();
-      await saveState(state);
-      console.log("Check-in sent!");
-    } else {
-      console.error("Failed to send check-in");
-    }
+  const hoursSinceLastMsg = await getHoursSinceLastUserMessage();
+  const memoryContext = await getMemoryContext(supabase);
+
+  const now = new Date().toLocaleString("en-GB", {
+    timeZone: USER_TIMEZONE,
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+
+  const prompt = buildPrompt(
+    `You are doing a proactive check-in. Current time: ${now}.
+${hoursSinceLastMsg !== null ? `The user last messaged ${hoursSinceLastMsg.toFixed(1)} hours ago.` : ""}
+You have checked in ${state.checkinsToday} time(s) today already (max ${MAX_CHECKINS_PER_DAY}).
+
+Decide whether to send a check-in message. Consider:
+- Is there something genuinely useful to say right now? (upcoming calendar events, goal deadlines, long silence worth breaking)
+- Would this feel helpful or annoying given the time and context?
+- Keep it short: 1-2 sentences max.
+
+Use your calendar tools (ms365-business, google-calendar) to check for upcoming events if relevant.
+
+If you decide to check in, respond with just the message to send — no preamble, no explanation.
+If you decide NOT to check in, respond with exactly: NO_CHECKIN`,
+    "telegram",
+    undefined,
+    memoryContext
+  );
+
+  console.log("[smart-checkin] Asking Claude...");
+  const response = await callClaude(prompt);
+
+  if (!response || response.trim().startsWith("NO_CHECKIN") || response.includes("Error:")) {
+    console.log("[smart-checkin] Claude decided not to check in:", response?.slice(0, 100));
+    return;
+  }
+
+  console.log("[smart-checkin] Sending:", response.slice(0, 100));
+  const sent = await sendTelegram(response.trim());
+
+  if (sent) {
+    const today = todayString();
+    state.lastCheckinTime = new Date().toISOString();
+    state.checkinsToday = (state.lastCheckinDate === today ? state.checkinsToday : 0) + 1;
+    state.lastCheckinDate = today;
+    await saveState(state);
+    console.log("[smart-checkin] Sent successfully");
   } else {
-    console.log("No check-in needed");
+    console.error("[smart-checkin] Failed to send Telegram message");
   }
 }
 
 main();
-
-// ============================================================
-// SCHEDULING
-// ============================================================
-/*
-Run every 30 minutes:
-
-CRON (Linux):
-*/30 * * * * cd /path/to/relay && bun run examples/smart-checkin.ts
-
-LAUNCHD (macOS) - save as ~/Library/LaunchAgents/com.claude.smart-checkin.plist:
-
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "...">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.claude.smart-checkin</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOU/.bun/bin/bun</string>
-        <string>run</string>
-        <string>examples/smart-checkin.ts</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>/path/to/relay</string>
-    <key>StartInterval</key>
-    <integer>1800</integer>  <!-- 30 minutes in seconds -->
-</dict>
-</plist>
-
-WINDOWS Task Scheduler:
-- Create task with "Daily" trigger
-- Set to repeat every 30 minutes
-*/

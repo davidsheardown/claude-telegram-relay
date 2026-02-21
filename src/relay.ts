@@ -126,6 +126,32 @@ bot.use(async (ctx, next) => {
 // COMMANDS
 // ============================================================
 
+// /checkin command — toggle proactive check-ins on/off
+bot.command("checkin", async (ctx) => {
+  const arg = ctx.message?.text?.replace("/checkin", "").trim().toLowerCase();
+  try {
+    const { setEnabled, getStatus } = await import("../examples/smart-checkin.ts");
+    if (arg === "on") {
+      await setEnabled(true);
+      await ctx.reply("Smart check-ins enabled. I'll proactively reach out up to 2x/day when there's something useful to say.");
+    } else if (arg === "off") {
+      await setEnabled(false);
+      await ctx.reply("Smart check-ins disabled. I'll only respond when you message me.");
+    } else {
+      const status = await getStatus();
+      await ctx.reply(
+        `Smart check-ins: ${status.enabled ? "ON" : "OFF"}\n` +
+        `Last check-in: ${status.lastCheckin}\n` +
+        `Check-ins today: ${status.checkinsToday}/2\n\n` +
+        `Use /checkin on or /checkin off to toggle.`
+      );
+    }
+  } catch (error) {
+    console.error("Checkin command error:", error);
+    await ctx.reply("Could not update check-in settings.");
+  }
+});
+
 // /call command — trigger an outbound phone call
 bot.command("call", async (ctx) => {
   const message = ctx.message?.text?.replace("/call", "").trim();
