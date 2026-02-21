@@ -1,174 +1,132 @@
 /**
- * Morning Briefing Example
+ * Morning Briefing
  *
- * Sends a daily summary via Telegram and/or phone call.
- * Customize this for your own morning routine.
+ * Fetches emails, work calendar, and Google Calendar via Claude MCPs,
+ * then delivers via Telegram and/or phone call.
  *
- * Set BRIEFING_DELIVERY in .env:
- *   "telegram" (default) — Telegram message only
- *   "phone"              — Phone call only
- *   "both"               — Telegram message + phone call
- *
- * Schedule this with:
- * - macOS: launchd (see daemon/morning-briefing.plist)
- * - Linux: cron or systemd timer
- * - Windows: Task Scheduler
- *
- * Run manually: bun run examples/morning-briefing.ts
+ * Scheduled via PM2 cron. Set BRIEFING_DELIVERY in .env:
+ *   "telegram" — Telegram only
+ *   "phone"    — Phone call only
+ *   "both"     — Telegram + phone call (default)
  */
 
+import { spawn } from "bun";
+import { join, dirname } from "path";
+
+const PROJECT_ROOT = dirname(dirname(import.meta.path));
+const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
+const PROJECT_DIR = process.env.PROJECT_DIR || PROJECT_ROOT;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
-const DELIVERY = (process.env.BRIEFING_DELIVERY || "telegram").toLowerCase();
+const DELIVERY = (process.env.MORNING_BRIEFING_DELIVERY || process.env.BRIEFING_DELIVERY || "telegram").toLowerCase();
+const USER_TIMEZONE = process.env.USER_TIMEZONE || "Europe/London";
 
 // ============================================================
-// TELEGRAM HELPER
+// CALL CLAUDE WITH MCP TOOLS
 // ============================================================
 
-async function sendTelegram(message: string): Promise<boolean> {
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-          parse_mode: "Markdown",
-        }),
-      }
-    );
+async function callClaude(prompt: string): Promise<string> {
+  const args = [
+    CLAUDE_PATH,
+    "--output-format", "text",
+    "--allowedTools", "mcp__google-calendar,mcp__ms365-personal,mcp__ms365-business",
+    "-p", prompt,
+  ];
 
-    return response.ok;
-  } catch (error) {
-    console.error("Telegram error:", error);
-    return false;
+  const proc = spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd: PROJECT_DIR,
+    env: { ...process.env, CLAUDECODE: "" },
+  });
+
+  const output = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    console.error("Claude error:", stderr);
+    throw new Error(`Claude exited with code ${exitCode}: ${stderr}`);
+  }
+
+  return output.trim();
+}
+
+// ============================================================
+// SEND TELEGRAM
+// ============================================================
+
+async function sendTelegram(message: string): Promise<void> {
+  const response = await fetch(
+    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text: message,
+        parse_mode: "Markdown",
+      }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Telegram error: ${response.status} ${await response.text()}`);
   }
 }
 
 // ============================================================
-// DATA FETCHERS (customize these for your sources)
-// ============================================================
-
-async function getUnreadEmails(): Promise<string> {
-  // Example: Use Gmail API, IMAP, or MCP tool
-  // Return a summary of unread emails
-
-  // Placeholder - replace with your implementation
-  return "- 3 unread emails (1 urgent from client)";
-}
-
-async function getCalendarEvents(): Promise<string> {
-  // Example: Use Google Calendar API or MCP tool
-  // Return today's events
-
-  // Placeholder
-  return "- 10:00 Team standup\n- 14:00 Client call";
-}
-
-async function getActiveGoals(): Promise<string> {
-  // Load from your persistence layer (Supabase, JSON file, etc.)
-
-  // Placeholder
-  return "- Finish video edit\n- Review PR";
-}
-
-async function getWeather(): Promise<string> {
-  // Optional: Weather API
-
-  // Placeholder
-  return "Sunny, 22°C";
-}
-
-async function getAINews(): Promise<string> {
-  // Optional: Pull from X/Twitter, RSS, or news API
-  // Use Grok, Perplexity, or web search
-
-  // Placeholder
-  return "- OpenAI released GPT-5\n- Anthropic launches new feature";
-}
-
-// ============================================================
-// BUILD BRIEFING
+// BUILD BRIEFING VIA CLAUDE
 // ============================================================
 
 async function buildBriefing(): Promise<string> {
   const now = new Date();
-  const dateStr = now.toLocaleDateString("en-US", {
+  const dateStr = now.toLocaleDateString("en-GB", {
+    timeZone: USER_TIMEZONE,
     weekday: "long",
+    year: "numeric",
     month: "long",
     day: "numeric",
   });
 
-  const sections: string[] = [];
+  const prompt = `You are preparing David's morning briefing for ${dateStr}.
 
-  // Header
-  sections.push(`🌅 **Good Morning!**\n${dateStr}\n`);
+Please gather the following using your MCP tools and format as a clean morning briefing:
 
-  // Weather (optional)
-  try {
-    const weather = await getWeather();
-    sections.push(`☀️ **Weather**\n${weather}\n`);
-  } catch (e) {
-    console.error("Weather fetch failed:", e);
-  }
+1. **Personal email (ms365-personal / davidsheardown@hotmail.com):**
+   - Fetch the top 3 emails from the Focused inbox
+   - Exclude anything that looks like marketing, newsletters, promotions, or sales emails
+   - For each: show sender, subject, and a one-line summary
 
-  // Calendar
-  try {
-    const calendar = await getCalendarEvents();
-    if (calendar) {
-      sections.push(`📅 **Today's Schedule**\n${calendar}\n`);
-    }
-  } catch (e) {
-    console.error("Calendar fetch failed:", e);
-  }
+2. **Work email (ms365-business / david@codingandconsulting.com):**
+   - Fetch the top 3 emails from the Focused inbox
+   - Exclude anything that looks like marketing, newsletters, promotions, or sales emails
+   - For each: show sender, subject, and a one-line summary
 
-  // Emails
-  try {
-    const emails = await getUnreadEmails();
-    if (emails) {
-      sections.push(`📧 **Inbox**\n${emails}\n`);
-    }
-  } catch (e) {
-    console.error("Email fetch failed:", e);
-  }
+3. **Work calendar (ms365-business):**
+   - Fetch all meetings/events for today
+   - Show time and title for each
 
-  // Goals
-  try {
-    const goals = await getActiveGoals();
-    if (goals) {
-      sections.push(`🎯 **Active Goals**\n${goals}\n`);
-    }
-  } catch (e) {
-    console.error("Goals fetch failed:", e);
-  }
+4. **Personal Google Calendar:**
+   - Fetch all events for today
+   - Show time and title for each
 
-  // AI News (optional)
-  try {
-    const news = await getAINews();
-    if (news) {
-      sections.push(`🤖 **AI News**\n${news}\n`);
-    }
-  } catch (e) {
-    console.error("News fetch failed:", e);
-  }
+Format the final briefing using Telegram-compatible Markdown (bold with *, not **).
+Use sections with emoji headers. Keep it concise and scannable.
+If any section has no items, say "Nothing to report" for that section.
+Do not include any preamble or explanation — just the formatted briefing.`;
 
-  // Footer (only for Telegram)
-  sections.push("---\n_Reply to chat or say \"call me\" for voice briefing_");
-
-  return sections.join("\n");
+  return await callClaude(prompt);
 }
 
-/** Strip markdown and emojis for spoken delivery. */
+/** Strip markdown for spoken phone delivery */
 function toSpoken(text: string): string {
   return text
-    .replace(/\*\*/g, "")           // bold
-    .replace(/_([^_]+)_/g, "$1")    // italic
-    .replace(/[🌅☀️📅📧🎯🤖]/g, "") // emojis
-    .replace(/^-\s/gm, "")          // bullet dashes
-    .replace(/---/g, "")            // horizontal rules
-    .replace(/\n{3,}/g, "\n\n")     // collapse blank lines
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/[🌅☀️📅📧🎯🤖📬📨🗓️]/gu, "")
+    .replace(/^-\s/gm, "")
+    .replace(/---/g, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -177,90 +135,38 @@ function toSpoken(text: string): string {
 // ============================================================
 
 async function main() {
-  console.log(`Building morning briefing (delivery: ${DELIVERY})...`);
+  console.log(`[morning-briefing] Starting (delivery: ${DELIVERY})...`);
 
-  const briefing = await buildBriefing();
-  let ok = true;
+  let briefing: string;
+  try {
+    briefing = await buildBriefing();
+    console.log("[morning-briefing] Briefing built successfully");
+  } catch (error) {
+    console.error("[morning-briefing] Failed to build briefing:", error);
+    process.exit(1);
+  }
 
-  // Telegram delivery
+  // Telegram
   if (DELIVERY === "telegram" || DELIVERY === "both") {
-    if (!BOT_TOKEN || !CHAT_ID) {
-      console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
-      ok = false;
-    } else {
-      console.log("Sending briefing via Telegram...");
-      const sent = await sendTelegram(briefing);
-      if (sent) {
-        console.log("Telegram briefing sent!");
-      } else {
-        console.error("Telegram delivery failed");
-        ok = false;
-      }
+    try {
+      await sendTelegram(briefing);
+      console.log("[morning-briefing] Telegram sent");
+    } catch (error) {
+      console.error("[morning-briefing] Telegram failed:", error);
     }
   }
 
-  // Phone delivery
+  // Phone
   if (DELIVERY === "phone" || DELIVERY === "both") {
     try {
       const { makeOutboundCall } = await import("../src/phone.ts");
       const spoken = toSpoken(briefing);
-      console.log("Calling with briefing...");
       await makeOutboundCall(spoken);
-      console.log("Phone briefing initiated!");
+      console.log("[morning-briefing] Phone call initiated");
     } catch (error) {
-      console.error("Phone delivery failed:", error);
-      ok = false;
+      console.error("[morning-briefing] Phone failed:", error);
     }
   }
-
-  if (!ok) process.exit(1);
 }
 
 main();
-
-// ============================================================
-// LAUNCHD PLIST FOR SCHEDULING (macOS)
-// ============================================================
-/*
-Save this as ~/Library/LaunchAgents/com.claude.morning-briefing.plist:
-
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.claude.morning-briefing</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOUR_USERNAME/.bun/bin/bun</string>
-        <string>run</string>
-        <string>examples/morning-briefing.ts</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>/path/to/claude-telegram-relay</string>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>9</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>/tmp/morning-briefing.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/morning-briefing.error.log</string>
-</dict>
-</plist>
-
-Load with: launchctl load ~/Library/LaunchAgents/com.claude.morning-briefing.plist
-*/
-
-// ============================================================
-// CRON FOR SCHEDULING (Linux)
-// ============================================================
-/*
-Add to crontab with: crontab -e
-
-# Run at 9:00 AM every day
-0 9 * * * cd /path/to/claude-telegram-relay && /home/USER/.bun/bin/bun run examples/morning-briefing.ts >> /tmp/morning-briefing.log 2>&1
-*/
