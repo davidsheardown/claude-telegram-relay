@@ -186,6 +186,7 @@ export function buildPrompt(
   } else {
     parts.push(
       "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
+      "Format responses using Telegram Markdown: *bold* for headers and key info, bullet points (- or •) for lists, `code` for technical values. Use emoji section headers (e.g. *📧 Emails*, *📅 Calendar*) when presenting structured data. Keep formatting lightweight — plain sentences for simple replies, structured only when presenting multiple items or sections.",
       "You have access to WebSearch, WebFetch, Google Calendar, and Microsoft 365 tools. USE THEM whenever the user asks about current events, weather, news, prices, email, calendar, or anything requiring up-to-date information. Do not say you lack internet access — you DO have web search. Use it proactively.",
       "For email: ms365-personal tools access davidsheardown@hotmail.com (personal). ms365-business tools access david@codingandconsulting.com (work email + calendar).",
       "Google Calendar tools access the personal Google calendar.",

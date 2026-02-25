@@ -327,8 +327,17 @@ bot.on("message:document", async (ctx) => {
 async function sendResponse(ctx: Context, response: string): Promise<void> {
   const MAX_LENGTH = 4000;
 
+  const sendChunk = async (text: string) => {
+    try {
+      await ctx.reply(text, { parse_mode: "Markdown" });
+    } catch {
+      // Fall back to plain text if Markdown parsing fails
+      await ctx.reply(text);
+    }
+  };
+
   if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
+    await sendChunk(response);
     return;
   }
 
@@ -351,7 +360,7 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
   }
 
   for (const chunk of chunks) {
-    await ctx.reply(chunk);
+    await sendChunk(chunk);
   }
 }
 
