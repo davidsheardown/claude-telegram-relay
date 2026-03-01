@@ -7,10 +7,11 @@
  * Run: bun run src/relay.ts
  */
 
-import { Bot, Context } from "grammy";
+import { Bot, Context, InputFile } from "grammy";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join } from "path";
 import { transcribe } from "./transcribe.ts";
+import { synthesise, ttsAvailable } from "./tts.ts";
 import {
   supabase,
   callClaude,
@@ -240,7 +241,19 @@ bot.on("message:voice", async (ctx) => {
     const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
     await saveMessage("assistant", claudeResponse, "telegram");
-    await sendResponse(ctx, claudeResponse);
+
+    if (ttsAvailable()) {
+      try {
+        await ctx.replyWithChatAction("record_voice");
+        const audioBuffer = await synthesise(claudeResponse);
+        await ctx.replyWithVoice(new InputFile(audioBuffer, "response.ogg"));
+      } catch (ttsError) {
+        console.error("TTS error, falling back to text:", ttsError);
+        await sendResponse(ctx, claudeResponse);
+      }
+    } else {
+      await sendResponse(ctx, claudeResponse);
+    }
   } catch (error) {
     console.error("Voice error:", error);
     await ctx.reply("Could not process voice message. Check logs for details.");
