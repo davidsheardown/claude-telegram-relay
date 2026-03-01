@@ -28,6 +28,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.code-workspace
+settings.local.json
+
+# Claude Code
+.claude/
 
 # Supabase CLI temp files
 supabase/.temp/
