@@ -157,7 +157,7 @@ bot.command("call", async (ctx) => {
   const message = ctx.message?.text?.replace("/call", "").trim();
 
   try {
-    const { makeOutboundCall } = await import("./phone.ts");
+    const { makeOutboundCall } = await import("./outbound.ts");
 
     const reason = message || "Hey, you asked me to call you!";
     await makeOutboundCall(reason);

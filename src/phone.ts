@@ -253,34 +253,10 @@ function handleStatus(params: Record<string, string>): Response {
 }
 
 // ============================================================
-// OUTBOUND CALL (exported for use by other modules)
+// OUTBOUND CALL (re-exported from outbound.ts for external use)
 // ============================================================
 
-export async function makeOutboundCall(
-  message: string,
-  to?: string
-): Promise<string> {
-  const targetNumber = to || USER_PHONE_NUMBER;
-
-  if (!targetNumber) {
-    throw new Error("No target phone number specified");
-  }
-
-  if (!TWILIO_PHONE_NUMBER) {
-    throw new Error("TWILIO_PHONE_NUMBER not configured");
-  }
-
-  const call = await twilioClient.calls.create({
-    to: targetNumber,
-    from: TWILIO_PHONE_NUMBER,
-    url: `${BASE_URL}/voice/outbound?message=${encodeURIComponent(message)}`,
-    statusCallback: `${BASE_URL}/voice/status`,
-    statusCallbackEvent: ["completed"],
-  });
-
-  console.log(`Outbound call initiated: ${call.sid}`);
-  return call.sid;
-}
+export { makeOutboundCall } from "./outbound.ts";
 
 // ============================================================
 // HELPERS

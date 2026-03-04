@@ -172,7 +172,7 @@ async function main() {
   // Phone
   if (DELIVERY === "phone" || DELIVERY === "both") {
     try {
-      const { makeOutboundCall } = await import("../src/phone.ts");
+      const { makeOutboundCall } = await import("../src/outbound.ts");
       const spoken = toSpoken(briefing);
       await makeOutboundCall(spoken);
       console.log("[morning-briefing] Phone call initiated");
