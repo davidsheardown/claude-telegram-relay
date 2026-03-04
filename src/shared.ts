@@ -127,7 +127,7 @@ export async function callClaude(
   const model = options?.model ?? selectModel(prompt);
   console.log(`Calling Claude [${model}]: ${prompt.substring(0, 50)}...`);
 
-  const args = ["--print", "--model", model, "--output-format", "json", "--dangerously-skip-permissions"];
+  const args = ["--print", "--model", model];
   if (session.sessionId) args.push("--resume", session.sessionId);
 
   try {
@@ -148,17 +148,7 @@ export async function callClaude(
       return `Error: ${stderrText.trim() || "Claude exited with code " + exitCode}`;
     }
 
-    try {
-      const parsed = JSON.parse(stdoutText);
-      if (parsed.session_id) {
-        session.sessionId = parsed.session_id;
-        session.lastActivity = new Date().toISOString();
-        await saveSession(session);
-      }
-      return parsed.result ?? parsed.content ?? stdoutText.trim();
-    } catch {
-      return stdoutText.trim() || "I processed your request but had no text response.";
-    }
+    return stdoutText.trim() || "I processed your request but had no text response.";
   } catch (error) {
     console.error("Claude error:", error);
     return `Error: ${error instanceof Error ? error.message : String(error)}`;
