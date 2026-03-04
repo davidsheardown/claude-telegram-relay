@@ -2,10 +2,9 @@
  * Shared Module
  *
  * Common logic used by both the Telegram relay and phone service.
- * Uses the Claude Agent SDK (API key auth) with MCP server support.
+ * Uses Claude CLI (API key auth) with MCP server support.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFile, writeFile } from "fs/promises";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
@@ -116,78 +115,10 @@ export function selectModel(prompt: string): string {
 }
 
 // ============================================================
-// MCP SERVER CONFIG
+// CALL CLAUDE (CLI subprocess — uses ANTHROPIC_API_KEY + MCP from .claude.json)
 // ============================================================
 
-function buildMcpServers(): Record<string, object> {
-  const servers: Record<string, object> = {};
-
-  // Google Calendar — requires GOOGLE_CALENDAR_MCP_PATH + GOOGLE_CALENDAR_ID
-  if (process.env.GOOGLE_CALENDAR_MCP_PATH && process.env.GOOGLE_CALENDAR_ID) {
-    servers["google-calendar"] = {
-      command: process.env.UV_PATH || "uv",
-      args: [
-        "--directory", process.env.GOOGLE_CALENDAR_MCP_PATH,
-        "run", "calendar_mcp.py",
-      ],
-      env: { GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID },
-    };
-  }
-
-  // MS365 Personal — requires MS365_PERSONAL_CLIENT_ID
-  if (process.env.MS365_PERSONAL_CLIENT_ID) {
-    servers["ms365-personal"] = {
-      command: "npx",
-      args: ["-y", "@softeria/ms-365-mcp-server", "--preset", "mail"],
-      env: {
-        MS365_MCP_CLIENT_ID:             process.env.MS365_PERSONAL_CLIENT_ID,
-        MS365_MCP_TENANT_ID:             "common",
-        MS365_MCP_TOKEN_CACHE_PATH:      process.env.MS365_PERSONAL_TOKEN_CACHE || join(HOME, ".ms365-personal-token-cache.json"),
-        MS365_MCP_SELECTED_ACCOUNT_PATH: process.env.MS365_PERSONAL_ACCOUNT_PATH || join(HOME, ".ms365-personal-account.json"),
-      },
-    };
-  }
-
-  // MS365 Business — requires MS365_BUSINESS_CLIENT_ID + MS365_BUSINESS_TENANT_ID
-  if (process.env.MS365_BUSINESS_CLIENT_ID && process.env.MS365_BUSINESS_TENANT_ID) {
-    servers["ms365-business"] = {
-      command: "npx",
-      args: ["-y", "@softeria/ms-365-mcp-server", "--org-mode", "--preset", "mail,calendar"],
-      env: {
-        MS365_MCP_CLIENT_ID:             process.env.MS365_BUSINESS_CLIENT_ID,
-        MS365_MCP_TENANT_ID:             process.env.MS365_BUSINESS_TENANT_ID,
-        MS365_MCP_TOKEN_CACHE_PATH:      process.env.MS365_BUSINESS_TOKEN_CACHE || join(HOME, ".ms365-business-token-cache.json"),
-        MS365_MCP_SELECTED_ACCOUNT_PATH: process.env.MS365_BUSINESS_ACCOUNT_PATH || join(HOME, ".ms365-business-account.json"),
-      },
-    };
-  }
-
-  // Reminder scheduler — always available (in-project)
-  const bunPath = process.env.BUN_PATH || "bun";
-  servers["reminder-scheduler"] = {
-    command: bunPath,
-    args: ["run", join(PROJECT_ROOT, "src/reminder-mcp.ts")],
-    env: {
-      REMINDERS_FILE:  process.env.REMINDERS_FILE || join(HOME, ".reminders.json"),
-      USER_TIMEZONE:   process.env.USER_TIMEZONE || "Europe/London",
-    },
-  };
-
-  return servers;
-}
-
-const MCP_SERVERS = buildMcpServers();
-const ALLOWED_TOOLS = [
-  "WebSearch", "WebFetch",
-  "mcp__google-calendar",
-  "mcp__ms365-personal",
-  "mcp__ms365-business",
-  "mcp__reminder-scheduler",
-];
-
-// ============================================================
-// CALL CLAUDE (Agent SDK)
-// ============================================================
+const CLAUDE_PATH = process.env.CLAUDE_PATH || "/usr/bin/claude";
 
 export async function callClaude(
   prompt: string,
@@ -196,36 +127,40 @@ export async function callClaude(
   const model = options?.model ?? selectModel(prompt);
   console.log(`Calling Claude [${model}]: ${prompt.substring(0, 50)}...`);
 
-  try {
-    let result = "";
+  const args = ["--print", "--model", model, "--output-format", "json", "--dangerously-skip-permissions"];
+  if (session.sessionId) args.push("--resume", session.sessionId);
 
-    for await (const msg of query({
-      prompt,
-      options: {
-        model,
-        mcpServers: MCP_SERVERS,
-        allowedTools: ALLOWED_TOOLS,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        ...(session.sessionId ? { resume: session.sessionId } : {}),
-      },
-    })) {
-      // Capture session ID for resumption
-      if (msg.type === "system" && msg.subtype === "init") {
-        session.sessionId = (msg as any).session_id ?? null;
+  try {
+    const proc = Bun.spawn([CLAUDE_PATH, ...args], {
+      stdin: new TextEncoder().encode(prompt),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdoutText, stderrText] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+
+    if (exitCode !== 0) {
+      console.error("Claude error:", stderrText);
+      return `Error: ${stderrText.trim() || "Claude exited with code " + exitCode}`;
+    }
+
+    try {
+      const parsed = JSON.parse(stdoutText);
+      if (parsed.session_id) {
+        session.sessionId = parsed.session_id;
         session.lastActivity = new Date().toISOString();
         await saveSession(session);
       }
-
-      // Capture result
-      if ("result" in msg && typeof (msg as any).result === "string") {
-        result = (msg as any).result;
-      }
+      return parsed.result ?? parsed.content ?? stdoutText.trim();
+    } catch {
+      return stdoutText.trim() || "I processed your request but had no text response.";
     }
-
-    return result || "I processed your request but had no text response.";
   } catch (error) {
-    console.error("Claude Agent error:", error);
+    console.error("Claude error:", error);
     return `Error: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
