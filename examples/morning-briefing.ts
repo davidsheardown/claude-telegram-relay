@@ -10,12 +10,10 @@
  *   "both"     — Telegram + phone call (default)
  */
 
-import { spawn } from "bun";
 import { join, dirname } from "path";
+import { callClaude } from "../src/shared.ts";
 
 const PROJECT_ROOT = dirname(dirname(import.meta.path));
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
-const PROJECT_DIR = process.env.PROJECT_DIR || PROJECT_ROOT;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
 const DELIVERY = (process.env.MORNING_BRIEFING_DELIVERY || process.env.BRIEFING_DELIVERY || "telegram").toLowerCase();
@@ -54,36 +52,6 @@ async function fetchWeather(): Promise<string> {
   }
 }
 
-// ============================================================
-// CALL CLAUDE WITH MCP TOOLS
-// ============================================================
-
-async function callClaude(prompt: string): Promise<string> {
-  const args = [
-    CLAUDE_PATH,
-    "--output-format", "text",
-    "--allowedTools", "mcp__google-calendar,mcp__ms365-personal,mcp__ms365-business",
-    "-p", prompt,
-  ];
-
-  const proc = spawn(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    cwd: PROJECT_DIR,
-    env: { ...process.env, CLAUDECODE: "" },
-  });
-
-  const output = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    console.error("Claude error:", stderr);
-    throw new Error(`Claude exited with code ${exitCode}: ${stderr}`);
-  }
-
-  return output.trim();
-}
 
 // ============================================================
 // SEND TELEGRAM
@@ -161,7 +129,7 @@ If any section has no items, say "Nothing to report" for that section.
 Include a 🌤 Weather section at the top using the pre-fetched data above — do not fetch weather yourself.
 Start your response directly with the ☀️ greeting line. Output nothing before it.`;
 
-  const raw = await callClaude(prompt);
+  const raw = await callClaude(prompt, { model: "claude-sonnet-4-6" });
   return extractFormattedBriefing(raw);
 }
 

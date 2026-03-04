@@ -16,6 +16,7 @@
     "test:phone": "bun run setup/test-phone.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^17.3.1",
     "grammy": "^1.21.1",

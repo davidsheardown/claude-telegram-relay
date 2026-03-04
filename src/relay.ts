@@ -190,7 +190,7 @@ bot.on("message:text", async (ctx) => {
   ]);
 
   const enrichedPrompt = buildPrompt(text, "telegram", relevantContext, memoryContext);
-  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+  const rawResponse = await callClaude(enrichedPrompt);
 
   const response = await processMemoryIntents(supabase, rawResponse);
 
@@ -237,7 +237,7 @@ bot.on("message:voice", async (ctx) => {
       relevantContext,
       memoryContext
     );
-    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+    const rawResponse = await callClaude(enrichedPrompt);
     const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
     await saveMessage("assistant", claudeResponse, "telegram");
@@ -284,7 +284,7 @@ bot.on("message:photo", async (ctx) => {
 
     await saveMessage("user", `[Image]: ${caption}`, "telegram");
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+    const claudeResponse = await callClaude(prompt);
 
     await unlink(filePath).catch(() => {});
 
@@ -320,7 +320,7 @@ bot.on("message:document", async (ctx) => {
 
     await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`, "telegram");
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+    const claudeResponse = await callClaude(prompt);
 
     await unlink(filePath).catch(() => {});
 
