@@ -2,11 +2,11 @@
  * Claude Phone Service (Twilio)
  *
  * Handles inbound and outbound phone calls via Twilio.
- * Reuses the same Claude CLI pipeline as the Telegram relay.
- *
- * Run: bun run src/phone.ts
+ * Run: tsx src/phone.ts
  */
 
+import "dotenv/config";
+import { serve } from "@hono/node-server";
 import { transcribe } from "./transcribe.ts";
 import {
   supabase,
@@ -300,9 +300,9 @@ function cleanupRecording(recordingSid: string): void {
 // HTTP SERVER
 // ============================================================
 
-const server = Bun.serve({
+serve({
   port: PORT,
-  async fetch(req) {
+  fetch: async (req: Request) => {
     const url = new URL(req.url);
     const path = url.pathname;
 

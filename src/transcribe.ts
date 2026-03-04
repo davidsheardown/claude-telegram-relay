@@ -4,7 +4,7 @@
  * Routes to Groq (cloud) or whisper.cpp (local) based on VOICE_PROVIDER env var.
  */
 
-import { spawn } from "bun";
+import { spawn } from "child_process";
 import { writeFile, readFile, unlink } from "fs/promises";
 import { join } from "path";
 
@@ -51,6 +51,16 @@ async function transcribeGroq(
   return result.text.trim();
 }
 
+function runCommand(cmd: string, args: string[]): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args);
+    const stderrChunks: Buffer[] = [];
+    proc.stderr?.on("data", (d: Buffer) => stderrChunks.push(d));
+    proc.on("close", (code) => resolve({ code: code ?? 0, stderr: Buffer.concat(stderrChunks).toString() }));
+    proc.on("error", reject);
+  });
+}
+
 async function transcribeLocal(audioBuffer: Buffer): Promise<string> {
   const whisperBinary = process.env.WHISPER_BINARY || "whisper-cpp";
   const modelPath = process.env.WHISPER_MODEL_PATH || "";
@@ -70,25 +80,20 @@ async function transcribeLocal(audioBuffer: Buffer): Promise<string> {
     await writeFile(oggPath, audioBuffer);
 
     // Convert OGG → WAV via ffmpeg
-    const ffmpeg = spawn(
-      ["ffmpeg", "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath, "-y"],
-      { stdout: "pipe", stderr: "pipe" }
-    );
-    const ffmpegExit = await ffmpeg.exited;
+    const { code: ffmpegExit, stderr: ffmpegStderr } = await runCommand("ffmpeg", [
+      "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath, "-y",
+    ]);
     if (ffmpegExit !== 0) {
-      const stderr = await new Response(ffmpeg.stderr).text();
-      throw new Error(`ffmpeg failed (code ${ffmpegExit}): ${stderr}`);
+      throw new Error(`ffmpeg failed (code ${ffmpegExit}): ${ffmpegStderr}`);
     }
 
     // Transcribe via whisper.cpp
-    const whisper = spawn(
-      [whisperBinary, "--model", modelPath, "--file", wavPath, "--output-txt", "--output-file", join(tmpDir, `voice_${timestamp}`), "--no-prints"],
-      { stdout: "pipe", stderr: "pipe" }
-    );
-    const whisperExit = await whisper.exited;
+    const { code: whisperExit, stderr: whisperStderr } = await runCommand(whisperBinary, [
+      "--model", modelPath, "--file", wavPath, "--output-txt",
+      "--output-file", join(tmpDir, `voice_${timestamp}`), "--no-prints",
+    ]);
     if (whisperExit !== 0) {
-      const stderr = await new Response(whisper.stderr).text();
-      throw new Error(`whisper-cpp failed (code ${whisperExit}): ${stderr}`);
+      throw new Error(`whisper-cpp failed (code ${whisperExit}): ${whisperStderr}`);
     }
 
     // Read the output text file

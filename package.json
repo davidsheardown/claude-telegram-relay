@@ -3,20 +3,21 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "bun run src/relay.ts",
-    "dev": "bun run --watch src/relay.ts",
-    "setup": "bun run setup/install.ts",
-    "test:telegram": "bun run setup/test-telegram.ts",
-    "test:supabase": "bun run setup/test-supabase.ts",
-    "test:voice": "bun run setup/test-voice.ts",
-    "setup:launchd": "bun run setup/configure-launchd.ts",
-    "setup:services": "bun run setup/configure-services.ts",
-    "setup:verify": "bun run setup/verify.ts",
-    "phone": "bun run src/phone.ts",
-    "test:phone": "bun run setup/test-phone.ts"
+    "start": "tsx src/relay.ts",
+    "dev": "tsx watch src/relay.ts",
+    "setup": "tsx setup/install.ts",
+    "test:telegram": "tsx setup/test-telegram.ts",
+    "test:supabase": "tsx setup/test-supabase.ts",
+    "test:voice": "tsx setup/test-voice.ts",
+    "setup:launchd": "tsx setup/configure-launchd.ts",
+    "setup:services": "tsx setup/configure-services.ts",
+    "setup:verify": "tsx setup/verify.ts",
+    "phone": "tsx src/phone.ts",
+    "test:phone": "tsx setup/test-phone.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "@hono/node-server": "^1.13.0",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^17.3.1",
     "grammy": "^1.21.1",
@@ -25,6 +26,7 @@
     "twilio": "^5.0.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
   }
 }

@@ -10,10 +10,8 @@
  *   "both"     — Telegram + phone call (default)
  */
 
-import { join, dirname } from "path";
+import "dotenv/config";
 import { callClaude } from "../src/shared.ts";
-
-const PROJECT_ROOT = dirname(dirname(import.meta.path));
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
 const DELIVERY = (process.env.MORNING_BRIEFING_DELIVERY || process.env.BRIEFING_DELIVERY || "telegram").toLowerCase();
@@ -152,7 +150,7 @@ function toSpoken(text: string): string {
 async function main() {
   console.log(`[morning-briefing] Starting (delivery: ${DELIVERY})...`);
 
-  let briefing: string;
+  let briefing = "";
   try {
     briefing = await buildBriefing();
     console.log("[morning-briefing] Briefing built successfully");

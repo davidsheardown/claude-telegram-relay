@@ -1,12 +1,11 @@
 /**
- * Claude Code Telegram Relay
+ * Claude Telegram Relay
  *
- * Minimal relay that connects Telegram to Claude Code CLI.
- * Customize this for your own needs.
- *
- * Run: bun run src/relay.ts
+ * Connects Telegram to Claude via the Agent SDK.
+ * Run: tsx src/relay.ts
  */
 
+import "dotenv/config";
 import { Bot, Context, InputFile } from "grammy";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join } from "path";

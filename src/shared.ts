@@ -2,12 +2,14 @@
  * Shared Module
  *
  * Common logic used by both the Telegram relay and phone service.
- * Uses Claude CLI (API key auth) with MCP server support.
+ * Uses Claude Agent SDK (API key auth) with MCP server support.
  */
 
-import { readFile, writeFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   processMemoryIntents,
   getMemoryContext,
@@ -17,15 +19,13 @@ import {
 // Re-export memory functions for convenience
 export { processMemoryIntents, getMemoryContext, getRelevantContext };
 
-export const PROJECT_ROOT = dirname(dirname(import.meta.path));
+export const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
 const HOME = process.env.HOME || process.env.USERPROFILE || "~";
-const RELAY_DIR =
-  process.env.RELAY_DIR || join(HOME, ".claude-relay");
 const USER_NAME = process.env.USER_NAME || "";
 const USER_TIMEZONE =
   process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -59,34 +59,6 @@ export async function saveMessage(
 }
 
 // ============================================================
-// SESSION MANAGEMENT
-// ============================================================
-
-const SESSION_FILE = join(RELAY_DIR, "session.json");
-
-interface SessionState {
-  sessionId: string | null;
-  lastActivity: string;
-}
-
-let session: SessionState = { sessionId: null, lastActivity: new Date().toISOString() };
-
-try {
-  const content = await readFile(SESSION_FILE, "utf-8");
-  session = JSON.parse(content);
-} catch {
-  // No existing session — that's fine
-}
-
-async function saveSession(state: SessionState): Promise<void> {
-  try {
-    await writeFile(SESSION_FILE, JSON.stringify(state, null, 2));
-  } catch {
-    // Ignore write errors (dir may not exist yet)
-  }
-}
-
-// ============================================================
 // MODEL ROUTER
 // ============================================================
 
@@ -115,10 +87,63 @@ export function selectModel(prompt: string): string {
 }
 
 // ============================================================
-// CALL CLAUDE (CLI subprocess — uses ANTHROPIC_API_KEY + MCP from .claude.json)
+// MCP SERVER CONFIG
 // ============================================================
 
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "/usr/bin/claude";
+function buildMcpServers(): Record<string, object> {
+  const servers: Record<string, object> = {};
+
+  if (process.env.GOOGLE_CALENDAR_MCP_PATH) {
+    servers["google-calendar"] = {
+      command: process.env.UV_PATH || "uv",
+      args: ["--directory", process.env.GOOGLE_CALENDAR_MCP_PATH, "run", "calendar_mcp.py"],
+      env: { GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || "" },
+    };
+  }
+
+  if (process.env.MS365_PERSONAL_TOKEN_CACHE) {
+    servers["ms365-personal"] = {
+      command: "npx",
+      args: ["-y", "@softeria/ms-365-mcp-server", "--preset", "mail"],
+      env: {
+        MS365_MCP_CLIENT_ID: process.env.MS365_PERSONAL_CLIENT_ID || "",
+        MS365_MCP_TENANT_ID: "common",
+        MS365_MCP_TOKEN_CACHE_PATH: process.env.MS365_PERSONAL_TOKEN_CACHE || "",
+        MS365_MCP_SELECTED_ACCOUNT_PATH: process.env.MS365_PERSONAL_ACCOUNT_PATH || "",
+      },
+    };
+  }
+
+  if (process.env.MS365_BUSINESS_TOKEN_CACHE) {
+    servers["ms365-business"] = {
+      command: "npx",
+      args: ["-y", "@softeria/ms-365-mcp-server", "--org-mode", "--preset", "mail,calendar"],
+      env: {
+        MS365_MCP_CLIENT_ID: process.env.MS365_BUSINESS_CLIENT_ID || "",
+        MS365_MCP_TENANT_ID: process.env.MS365_BUSINESS_TENANT_ID || "",
+        MS365_MCP_TOKEN_CACHE_PATH: process.env.MS365_BUSINESS_TOKEN_CACHE || "",
+        MS365_MCP_SELECTED_ACCOUNT_PATH: process.env.MS365_BUSINESS_ACCOUNT_PATH || "",
+      },
+    };
+  }
+
+  // reminder-scheduler (local MCP — always added)
+  const tsxBin = join(PROJECT_ROOT, "node_modules/.bin/tsx");
+  servers["reminder-scheduler"] = {
+    command: tsxBin,
+    args: [join(PROJECT_ROOT, "src/reminder-mcp.ts")],
+    env: {
+      REMINDERS_FILE: process.env.REMINDERS_FILE || join(HOME, ".reminders.json"),
+      USER_TIMEZONE: process.env.USER_TIMEZONE || "Europe/London",
+    },
+  };
+
+  return servers;
+}
+
+// ============================================================
+// CALL CLAUDE (Agent SDK — uses ANTHROPIC_API_KEY, no OAuth)
+// ============================================================
 
 export async function callClaude(
   prompt: string,
@@ -127,28 +152,22 @@ export async function callClaude(
   const model = options?.model ?? selectModel(prompt);
   console.log(`Calling Claude [${model}]: ${prompt.substring(0, 50)}...`);
 
-  const args = ["--print", "--model", model];
-  if (session.sessionId) args.push("--resume", session.sessionId);
-
+  let result = "";
   try {
-    const proc = Bun.spawn([CLAUDE_PATH, ...args], {
-      stdin: new TextEncoder().encode(prompt),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const [stdoutText, stderrText] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
-
-    if (exitCode !== 0) {
-      console.error("Claude error:", stderrText);
-      return `Error: ${stderrText.trim() || "Claude exited with code " + exitCode}`;
+    for await (const message of query({
+      prompt,
+      options: {
+        model,
+        mcpServers: buildMcpServers(),
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+      },
+    })) {
+      if ("result" in message) {
+        result = message.result as string;
+      }
     }
-
-    return stdoutText.trim() || "I processed your request but had no text response.";
+    return result || "I processed your request but had no text response.";
   } catch (error) {
     console.error("Claude error:", error);
     return `Error: ${error instanceof Error ? error.message : String(error)}`;
