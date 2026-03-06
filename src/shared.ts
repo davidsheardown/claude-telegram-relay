@@ -9,7 +9,9 @@ import { readFile } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import Anthropic from "@anthropic-ai/sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
   processMemoryIntents,
   getMemoryContext,
@@ -143,8 +145,10 @@ function buildMcpServers(): Record<string, object> {
 }
 
 // ============================================================
-// CALL CLAUDE (Agent SDK — uses ANTHROPIC_API_KEY, no OAuth)
+// CALL CLAUDE (Direct Anthropic SDK — API key only, no CLI subprocess)
 // ============================================================
+
+const anthropic = new Anthropic(); // uses ANTHROPIC_API_KEY from env
 
 export async function callClaude(
   prompt: string,
@@ -153,26 +157,117 @@ export async function callClaude(
   const model = options?.model ?? selectModel(prompt);
   console.log(`Calling Claude [${model}]: ${prompt.substring(0, 50)}...`);
 
-  let result = "";
-  try {
-    for await (const message of query({
-      prompt,
-      options: {
-        model,
-        mcpServers: buildMcpServers(),
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-      },
-    })) {
-      if ("result" in message) {
-        result = message.result as string;
+  // Start configured MCP servers in parallel
+  const serverConfigs = buildMcpServers() as Record<
+    string,
+    { command: string; args: string[]; env?: Record<string, string> }
+  >;
+
+  type McpEntry = { client: Client; tools: Anthropic.Tool[] };
+  const entries: McpEntry[] = [];
+
+  await Promise.allSettled(
+    Object.entries(serverConfigs).map(async ([name, cfg]) => {
+      try {
+        const transport = new StdioClientTransport({
+          command: cfg.command,
+          args: cfg.args,
+          env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
+        });
+        const client = new Client(
+          { name: "claude-relay", version: "1.0.0" },
+          { capabilities: {} }
+        );
+        await client.connect(transport);
+        const { tools } = await client.listTools();
+        const anthropicTools: Anthropic.Tool[] = tools.map((t: { name: string; description?: string; inputSchema: unknown }) => ({
+          name: t.name,
+          description: t.description ?? "",
+          input_schema: t.inputSchema as Anthropic.Tool["input_schema"],
+        }));
+        entries.push({ client, tools: anthropicTools });
+        console.log(`[MCP] ${name}: ${tools.length} tools`);
+      } catch (err) {
+        console.warn(`[MCP] ${name} failed:`, (err as Error).message);
       }
+    })
+  );
+
+  // Build tool routing map
+  const toolToClient = new Map<string, Client>();
+  const mcpTools: Anthropic.Tool[] = [];
+  for (const { client, tools } of entries) {
+    for (const tool of tools) {
+      mcpTools.push(tool);
+      toolToClient.set(tool.name, client);
     }
-    return result || "I processed your request but had no text response.";
+  }
+
+  // Anthropic native web search (server-side, no extra API key needed)
+  const webSearchTool = {
+    type: "web_search_20250305",
+    name: "web_search",
+  } as unknown as Anthropic.Tool;
+
+  const allTools = [webSearchTool, ...mcpTools];
+
+  // Agent loop (max 10 turns)
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
+  let result = "";
+
+  try {
+    for (let turn = 0; turn < 10; turn++) {
+      const response = await anthropic.messages.create({
+        model,
+        max_tokens: 4096,
+        tools: allTools,
+        messages,
+      });
+
+      // Capture any text in this turn
+      for (const block of response.content) {
+        if (block.type === "text") result = block.text;
+      }
+
+      if (response.stop_reason !== "tool_use") break;
+
+      // Process tool calls
+      messages.push({ role: "assistant", content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of response.content) {
+        if (block.type !== "tool_use") continue;
+
+        const mcpClient = toolToClient.get(block.name);
+        let content = "";
+
+        if (mcpClient) {
+          try {
+            const r = await mcpClient.callTool({
+              name: block.name,
+              arguments: block.input as Record<string, unknown>,
+            });
+            content = (r.content as Array<{ type: string; text?: string }>)
+              .map((c) => c.text ?? JSON.stringify(c))
+              .join("\n");
+          } catch (err) {
+            content = `Tool error: ${(err as Error).message}`;
+          }
+        }
+        // web_search blocks: content stays "" — Anthropic fills results automatically
+
+        toolResults.push({ type: "tool_result", tool_use_id: block.id, content });
+      }
+      messages.push({ role: "user", content: toolResults });
+    }
   } catch (error) {
     console.error("Claude error:", error);
     return `Error: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    await Promise.allSettled(entries.map(({ client }) => client.close()));
   }
+
+  return result || "I processed your request but had no text response.";
 }
 
 // ============================================================
