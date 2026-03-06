@@ -191,7 +191,7 @@ try {
 
 export function buildPrompt(
   userMessage: string,
-  channel: "telegram" | "phone" = "telegram",
+  channel: "telegram" | "phone" | "alexa" = "telegram",
   relevantContext?: string,
   memoryContext?: string
 ): string {
@@ -208,10 +208,11 @@ export function buildPrompt(
 
   const parts: string[] = [];
 
-  if (channel === "phone") {
+  if (channel === "phone" || channel === "alexa") {
+    const src = channel === "alexa" ? "an Alexa voice query" : "a phone call";
     parts.push(
-      "You are a personal AI assistant on a phone call. Keep responses to 2-3 sentences max.",
-      "Speak naturally as if talking, not texting. No markdown, no bullet points, no URLs, no code blocks.",
+      `You are a personal AI assistant responding to ${src}. Keep responses to 2-3 sentences max.`,
+      "Speak naturally. No markdown, no bullet points, no asterisks, no URLs, no code blocks.",
       "Use conversational language. Be warm and concise.",
       "You have access to WebSearch, WebFetch, Google Calendar, and Microsoft 365 tools. Use them for current events, weather, news, email, calendar, etc.",
       "For email: ms365-personal tools access davidsheardown@hotmail.com (personal). ms365-business tools access david@codingandconsulting.com (work email + calendar).",
