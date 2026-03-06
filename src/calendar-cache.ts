@@ -19,7 +19,7 @@ const CACHE_FILE =
   process.env.CALENDAR_CACHE_FILE ||
   join(process.env.HOME || "~", ".calendar-cache.json");
 
-const REFRESH_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+const REFRESH_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 interface CalendarCache {
   refreshed: string;
@@ -46,8 +46,8 @@ async function refreshCache(): Promise<void> {
     "Reply with just the summary, nothing else.";
 
   const [todayText, tomorrowText] = await Promise.all([
-    callClaude(todayPrompt),
-    callClaude(tomorrowPrompt),
+    callClaude(todayPrompt, { model: "claude-haiku-4-5" }),
+    callClaude(tomorrowPrompt, { model: "claude-haiku-4-5" }),
   ]);
 
   const cache: CalendarCache = {

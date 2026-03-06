@@ -77,8 +77,9 @@ export function selectModel(prompt: string): string {
   }
 
   // Sonnet: tool-requiring keywords or longer messages
+  // Only use Sonnet when tools are genuinely needed (fetching/writing data)
   const toolKeywords = /\b(email|calendar|schedule|meeting|weather|search|news|google|microsoft|outlook|office|reminder|remind|research|ms365|briefing)\b/;
-  if (toolKeywords.test(msg) || msg.length > 300) {
+  if (toolKeywords.test(msg) || msg.length > 500) {
     return SONNET;
   }
 
