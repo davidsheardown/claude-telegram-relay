@@ -93,7 +93,30 @@ export function selectModel(prompt: string): string {
 // MCP SERVER CONFIG
 // ============================================================
 
-function buildMcpServers(): Record<string, object> {
+// Returns only the MCP servers relevant to the message — avoids sending
+// 80 large tool schemas on every call (huge token waste).
+function selectMcpServers(msg: string): string[] {
+  const lower = msg.toLowerCase();
+  const servers: string[] = ["reminder-scheduler"]; // always included
+
+  if (/\b(calendar|schedule|event|meeting|appointment)\b/.test(lower)) {
+    servers.push("google-calendar");
+  }
+  if (/\b(email|mail|inbox|hotmail|personal mail|message)\b/.test(lower)) {
+    servers.push("ms365-personal");
+  }
+  if (/\b(work email|work mail|office|business|david@coding|ms365|teams)\b/.test(lower)) {
+    servers.push("ms365-business");
+  }
+  // If no specific match but tools are likely needed, load all
+  if (servers.length === 1 && /\b(email|calendar|schedule|meeting|weather|search|news|google|microsoft|outlook|office|reminder|remind|research|ms365|briefing)\b/.test(lower)) {
+    servers.push("google-calendar", "ms365-personal", "ms365-business");
+  }
+
+  return servers;
+}
+
+function buildMcpServers(filter?: string[]): Record<string, object> {
   const servers: Record<string, object> = {};
 
   if (process.env.GOOGLE_CALENDAR_MCP_PATH) {
@@ -141,6 +164,13 @@ function buildMcpServers(): Record<string, object> {
     },
   };
 
+  // Apply filter if provided
+  if (filter) {
+    for (const key of Object.keys(servers)) {
+      if (!filter.includes(key)) delete servers[key];
+    }
+  }
+
   return servers;
 }
 
@@ -157,8 +187,16 @@ export async function callClaude(
   const model = options?.model ?? selectModel(prompt);
   console.log(`Calling Claude [${model}]: ${prompt.substring(0, 50)}...`);
 
-  // Start configured MCP servers in parallel
-  const serverConfigs = buildMcpServers() as Record<
+  // Extract user message for MCP server selection
+  const userMsgMatch = prompt.match(/\nUser: ([\s\S]+)$/);
+  const userMsg = userMsgMatch ? userMsgMatch[1] : prompt;
+
+  // Haiku calls are conversational — no tools needed, skip MCP entirely
+  const needsTools = model !== HAIKU;
+  const mcpFilter = needsTools ? selectMcpServers(userMsg) : [];
+
+  // Start configured MCP servers in parallel (empty filter = no servers)
+  const serverConfigs = buildMcpServers(needsTools ? mcpFilter : []) as Record<
     string,
     { command: string; args: string[]; env?: Record<string, string> }
   >;
@@ -211,7 +249,8 @@ export async function callClaude(
     name: "web_search",
   } as unknown as Anthropic.Tool;
 
-  const allTools = [webSearchTool, ...mcpTools];
+  // Only include tools if this call needs them — empty array causes API error
+  const allTools = needsTools ? [webSearchTool, ...mcpTools] : undefined;
 
   // Agent loop (max 10 turns)
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
@@ -222,7 +261,7 @@ export async function callClaude(
       const response = await anthropic.messages.create({
         model,
         max_tokens: 4096,
-        tools: allTools,
+        ...(allTools ? { tools: allTools } : {}),
         messages,
       });
 
