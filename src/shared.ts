@@ -163,7 +163,7 @@ export async function callClaude(
     { command: string; args: string[]; env?: Record<string, string> }
   >;
 
-  type McpEntry = { client: Client; tools: Anthropic.Tool[] };
+  type McpEntry = { client: Client; tools: Anthropic.Tool[]; prefix: string };
   const entries: McpEntry[] = [];
 
   await Promise.allSettled(
@@ -180,12 +180,14 @@ export async function callClaude(
         );
         await client.connect(transport);
         const { tools } = await client.listTools();
+        // Prefix tool names with server name (snake_case) to ensure uniqueness
+        const prefix = name.replace(/-/g, "_") + "__";
         const anthropicTools: Anthropic.Tool[] = tools.map((t: { name: string; description?: string; inputSchema: unknown }) => ({
-          name: t.name,
-          description: t.description ?? "",
+          name: prefix + t.name,
+          description: `[${name}] ${t.description ?? ""}`,
           input_schema: t.inputSchema as Anthropic.Tool["input_schema"],
         }));
-        entries.push({ client, tools: anthropicTools });
+        entries.push({ client, tools: anthropicTools, prefix });
         console.log(`[MCP] ${name}: ${tools.length} tools`);
       } catch (err) {
         console.warn(`[MCP] ${name} failed:`, (err as Error).message);
@@ -243,8 +245,12 @@ export async function callClaude(
 
         if (mcpClient) {
           try {
+            // Strip the server prefix before calling MCP (e.g. "ms365_personal__list_mail" → "list_mail")
+            const originalName = block.name.includes("__")
+              ? block.name.slice(block.name.indexOf("__") + 2)
+              : block.name;
             const r = await mcpClient.callTool({
-              name: block.name,
+              name: originalName,
               arguments: block.input as Record<string, unknown>,
             });
             content = (r.content as Array<{ type: string; text?: string }>)
