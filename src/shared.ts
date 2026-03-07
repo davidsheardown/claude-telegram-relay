@@ -65,7 +65,7 @@ export async function saveMessage(
 // ============================================================
 
 const OPUS   = "claude-opus-4-6";
-const SONNET = "claude-3-5-sonnet-20241022"; // higher rate limit than 4.6 on Tier 1 (50k vs 30k tokens/min)
+const SONNET = "claude-sonnet-4-6";
 const HAIKU  = "claude-haiku-4-5";
 
 export function selectModel(prompt: string): string {
