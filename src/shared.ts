@@ -65,7 +65,7 @@ export async function saveMessage(
 // ============================================================
 
 const OPUS   = "claude-opus-4-6";
-const SONNET = "claude-sonnet-4-6";
+const SONNET = "claude-3-5-sonnet-20241022"; // higher rate limit than 4.6 on Tier 1 (50k vs 30k tokens/min)
 const HAIKU  = "claude-haiku-4-5";
 
 export function selectModel(prompt: string): string {
@@ -117,6 +117,27 @@ function selectMcpServers(msg: string): string[] {
 }
 
 type RawTool = { name: string; description?: string; inputSchema: unknown };
+
+// Strip verbose descriptions/examples from JSON schema properties.
+// ms365 tool schemas can be 2000+ tokens each — we keep structure but drop prose.
+function minimizeSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return schema;
+  const s = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (s.type) out.type = s.type;
+  if (s.required) out.required = s.required;
+  if (s.enum) out.enum = s.enum;
+  if (s.properties && typeof s.properties === "object") {
+    out.properties = Object.fromEntries(
+      Object.entries(s.properties as Record<string, unknown>).map(([k, v]) => [
+        k,
+        minimizeSchema(v),
+      ])
+    );
+  }
+  if (s.items) out.items = minimizeSchema(s.items);
+  return out;
+}
 
 // Reduces the tool list to only those relevant to the query.
 // ms365-business alone has 45 tools with huge schemas — sending all of them
@@ -255,8 +276,8 @@ export async function callClaude(
         const relevantTools = filterRelevantTools(tools as Array<{ name: string; description?: string; inputSchema: unknown }>, userMsg, name);
         const anthropicTools: Anthropic.Tool[] = relevantTools.map((t) => ({
           name: prefix + t.name,
-          description: (t.description ?? "").slice(0, 120), // truncate verbose descriptions
-          input_schema: t.inputSchema as Anthropic.Tool["input_schema"],
+          description: (t.description ?? "").slice(0, 120),
+          input_schema: minimizeSchema(t.inputSchema) as Anthropic.Tool["input_schema"],
         }));
         entries.push({ client, tools: anthropicTools, prefix });
         console.log(`[MCP] ${name}: ${tools.length} tools`);
