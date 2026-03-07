@@ -54,7 +54,8 @@ function isReminderListQuery(text: string): boolean {
 }
 
 function isTimeQuery(text: string): boolean {
-  return /\b(what(('?s| is) the)? time|current time|time is it)\b/i.test(text);
+  // Covers "what time is it", "time is it", "time it is", "current time", "what's the time"
+  return /\btime\b/i.test(text) && !/\b(calendar|schedule|meeting|appointment|event|remind)\b/i.test(text);
 }
 
 function timeFastPath(): string {
@@ -228,6 +229,7 @@ serve({
     console.log(`[alexa] Timeout — routing answer to Telegram`);
     claudePromise
       .then(async (answer) => {
+        if (!answer || answer.startsWith("Error:")) return; // swallow API errors silently
         const processed = await processMemoryIntents(supabase, answer);
         await saveMessage("user", `[Alexa]: ${text}`, "alexa");
         await saveMessage("assistant", processed, "alexa");
