@@ -53,6 +53,20 @@ function isReminderListQuery(text: string): boolean {
     !/\bset|add|create|schedule\b/i.test(text); // "set a reminder" goes to slow path
 }
 
+function isTimeQuery(text: string): boolean {
+  return /\b(what(('?s| is) the)? time|current time|time is it)\b/i.test(text);
+}
+
+function timeFastPath(): string {
+  const tz = process.env.USER_TIMEZONE || "Europe/London";
+  return new Date().toLocaleString("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 async function calendarFastPath(text: string): Promise<string | null> {
   try {
     const content = await readFile(CALENDAR_CACHE_FILE, "utf-8");
@@ -161,6 +175,13 @@ serve({
         headers: { "Content-Type": "application/json" },
       });
 
+    // ── Fast path: time ──────────────────────────────────────
+    if (isTimeQuery(text)) {
+      const speech = `It's ${timeFastPath()}.`;
+      console.log(`[alexa] Fast path (time): ${speech}`);
+      return json(speech);
+    }
+
     // ── Fast path: calendar ──────────────────────────────────
     if (isCalendarQuery(text)) {
       const cached = await calendarFastPath(text);
@@ -183,7 +204,10 @@ serve({
     // Single Claude call — reused for Telegram fallback if timeout fires
     const claudePromise = callClaude(prompt).then((r) =>
       r.replace(/[*_`#]/g, "").trim()
-    );
+    ).catch((err: Error) => {
+      console.error("[alexa] Claude error:", err.message);
+      return null as unknown as string;
+    });
 
     const timeoutPromise = new Promise<null>((resolve) =>
       setTimeout(() => resolve(null), RESPONSE_TIMEOUT_MS)
