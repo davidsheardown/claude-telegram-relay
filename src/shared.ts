@@ -116,6 +116,37 @@ function selectMcpServers(msg: string): string[] {
   return servers;
 }
 
+type RawTool = { name: string; description?: string; inputSchema: unknown };
+
+// Reduces the tool list to only those relevant to the query.
+// ms365-business alone has 45 tools with huge schemas — sending all of them
+// every call burns tokens and hits rate limits.
+function filterRelevantTools(tools: RawTool[], msg: string, serverName: string): RawTool[] {
+  const lower = msg.toLowerCase();
+
+  // For ms365 servers, pick only the operation type needed
+  if (serverName.startsWith("ms365")) {
+    const wantsCalendar = /\b(calendar|event|meeting|appointment|schedule)\b/.test(lower);
+    const wantsMail = /\b(email|mail|inbox|message|send|reply|forward)\b/.test(lower);
+    const wantsContacts = /\b(contact|people|person|colleague)\b/.test(lower);
+
+    return tools.filter((t) => {
+      const n = t.name.toLowerCase();
+      if (wantsCalendar && (n.includes("event") || n.includes("calendar"))) return true;
+      if (wantsMail && (n.includes("mail") || n.includes("message") || n.includes("email"))) return true;
+      if (wantsContacts && (n.includes("contact") || n.includes("people"))) return true;
+      // If nothing specific matched, return core list-type tools only
+      if (!wantsCalendar && !wantsMail && !wantsContacts) {
+        return n.startsWith("list_") || n.startsWith("get_");
+      }
+      return false;
+    });
+  }
+
+  // For other servers, return all tools (reminder-scheduler has only 3, calendar has 4)
+  return tools;
+}
+
 function buildMcpServers(filter?: string[]): Record<string, object> {
   const servers: Record<string, object> = {};
 
@@ -220,9 +251,11 @@ export async function callClaude(
         const { tools } = await client.listTools();
         // Prefix tool names with server name (snake_case) to ensure uniqueness
         const prefix = name.replace(/-/g, "_") + "__";
-        const anthropicTools: Anthropic.Tool[] = tools.map((t: { name: string; description?: string; inputSchema: unknown }) => ({
+        // Filter tools to only those relevant to the query (reduces token count significantly)
+        const relevantTools = filterRelevantTools(tools as Array<{ name: string; description?: string; inputSchema: unknown }>, userMsg, name);
+        const anthropicTools: Anthropic.Tool[] = relevantTools.map((t) => ({
           name: prefix + t.name,
-          description: `[${name}] ${t.description ?? ""}`,
+          description: (t.description ?? "").slice(0, 120), // truncate verbose descriptions
           input_schema: t.inputSchema as Anthropic.Tool["input_schema"],
         }));
         entries.push({ client, tools: anthropicTools, prefix });
