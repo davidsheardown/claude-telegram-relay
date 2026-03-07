@@ -76,6 +76,11 @@ async function refreshCache(): Promise<void> {
     callClaude(tomorrowPrompt, { model: "claude-haiku-4-5" }),
   ]);
 
+  if (todayText.startsWith("Error:") || tomorrowText.startsWith("Error:")) {
+    console.warn(`[calendar-cache] Claude returned an error — skipping cache write. today: ${todayText.substring(0, 80)}`);
+    return;
+  }
+
   const cache: CalendarCache = {
     refreshed: new Date().toISOString(),
     today_date: new Date().toISOString().split("T")[0],

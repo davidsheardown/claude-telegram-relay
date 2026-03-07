@@ -79,7 +79,9 @@ async function calendarFastPath(text: string): Promise<string | null> {
       return null;
     }
 
-    return /tomorrow/i.test(text) ? cache.tomorrow_text : cache.today_text;
+    const text_ = /tomorrow/i.test(text) ? cache.tomorrow_text : cache.today_text;
+    if (!text_ || text_.startsWith("Error:")) return null; // stale/corrupt — fall to slow path
+    return text_;
   } catch {
     return null; // cache missing — fall to slow path
   }
