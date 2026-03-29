@@ -16,6 +16,7 @@ import {
   getRelevantContext,
   getMemoryContext,
   processMemoryIntents,
+  selectModel,
 } from "./shared.ts";
 import {
   greeting,
@@ -181,23 +182,23 @@ async function processRecordingAsync(
     memoryContext
   );
 
-  // Race Claude against a 3s timer — if too slow, hang up and call back
-  let callbackFired = false;
-  const callbackTimer = setTimeout(() => {
-    callbackFired = true;
+  // Determine upfront whether this will need MCP tools (Sonnet/Opus).
+  // Those calls take 10-20s — better to hang up and call back than make the
+  // user wait on the line. Haiku is near-instant so responds in-call.
+  const model = selectModel(enrichedPrompt);
+  const willBeSlow = model !== "claude-haiku-4-5";
+
+  if (willBeSlow) {
     pendingResponses.set(callSid, "CALLBACK");
-    console.log(`[phone] Slow response for ${callSid} — will call back`);
-  }, 3000);
+    console.log(`[phone] ${model} call — hanging up, will call back`);
+  }
 
   const rawResponse = await callClaude(enrichedPrompt);
-  clearTimeout(callbackTimer);
-
   const response = await processMemoryIntents(supabase, rawResponse);
   await saveMessage("assistant", response, "phone");
   cleanupRecording(recordingSid);
 
-  if (callbackFired) {
-    // Current call already ended — deliver answer via outbound callback
+  if (willBeSlow) {
     console.log(`[phone] Calling back ${USER_PHONE_NUMBER} with answer`);
     await twilioClient.calls.create({
       to: USER_PHONE_NUMBER,
