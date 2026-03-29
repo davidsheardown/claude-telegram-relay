@@ -30,7 +30,7 @@ const PORT = parseInt(process.env.ALEXA_WEBHOOK_PORT || "3200");
 const ALEXA_SECRET = process.env.ALEXA_SECRET || "";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
-const RESPONSE_TIMEOUT_MS = 6000;
+const RESPONSE_TIMEOUT_MS = 3000;
 
 const CALENDAR_CACHE_FILE =
   process.env.CALENDAR_CACHE_FILE ||

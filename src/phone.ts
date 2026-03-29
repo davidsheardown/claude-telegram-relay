@@ -181,13 +181,35 @@ async function processRecordingAsync(
     memoryContext
   );
 
-  const rawResponse = await callClaude(enrichedPrompt);
-  const response = await processMemoryIntents(supabase, rawResponse);
+  // Race Claude against a 3s timer — if too slow, hang up and call back
+  let callbackFired = false;
+  const callbackTimer = setTimeout(() => {
+    callbackFired = true;
+    pendingResponses.set(callSid, "CALLBACK");
+    console.log(`[phone] Slow response for ${callSid} — will call back`);
+  }, 3000);
 
+  const rawResponse = await callClaude(enrichedPrompt);
+  clearTimeout(callbackTimer);
+
+  const response = await processMemoryIntents(supabase, rawResponse);
   await saveMessage("assistant", response, "phone");
   cleanupRecording(recordingSid);
 
-  pendingResponses.set(callSid, response);
+  if (callbackFired) {
+    // Current call already ended — deliver answer via outbound callback
+    console.log(`[phone] Calling back ${USER_PHONE_NUMBER} with answer`);
+    await twilioClient.calls.create({
+      to: USER_PHONE_NUMBER,
+      from: TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/voice/callback?message=${encodeURIComponent(response)}`,
+      method: "POST" as const,
+      statusCallback: `${BASE_URL}/voice/status`,
+      statusCallbackEvent: ["completed"],
+    }).catch((err: unknown) => console.error("[phone] Callback call error:", err));
+  } else {
+    pendingResponses.set(callSid, response);
+  }
 }
 
 /** Handle poll requests — check if Claude's response is ready. */
@@ -202,6 +224,12 @@ function handlePoll(query: URLSearchParams): Response {
   <Pause length="2"/>
   <Redirect method="POST">${BASE_URL}/voice/poll?callSid=${encodeURIComponent(callSid)}</Redirect>
 </Response>`);
+  }
+
+  // Too slow — hang up, answer will arrive via callback call
+  if (response === "CALLBACK") {
+    pendingResponses.delete(callSid);
+    return twimlResponse(sayAndHangup("That will take a moment. I'll call you straight back with the answer."));
   }
 
   // Response is ready — clean up and deliver
@@ -238,6 +266,12 @@ async function handleOutbound(
   return twimlResponse(
     sayAndRecord(message, `${BASE_URL}/voice/respond`)
   );
+}
+
+/** Outbound callback — speaks the answer and hangs up. No further recording. */
+function handleCallback(params: Record<string, string>, query: URLSearchParams): Response {
+  const message = query.get("message") || params.message || "Here is your answer.";
+  return twimlResponse(sayAndHangup(message));
 }
 
 function handleStatus(params: Record<string, string>): Response {
@@ -305,6 +339,8 @@ serve({
           return handlePoll(url.searchParams);
         case "/voice/status":
           return handleStatus(params);
+        case "/voice/callback":
+          return handleCallback(params, url.searchParams);
         default:
           return new Response("Not found", { status: 404 });
       }

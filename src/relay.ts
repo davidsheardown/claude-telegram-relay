@@ -180,7 +180,6 @@ bot.on("message:text", async (ctx) => {
   console.log(`Message: ${text.substring(0, 50)}...`);
 
   await ctx.replyWithChatAction("typing");
-
   await saveMessage("user", text, "telegram");
 
   const [relevantContext, memoryContext] = await Promise.all([
@@ -189,10 +188,18 @@ bot.on("message:text", async (ctx) => {
   ]);
 
   const enrichedPrompt = buildPrompt(text, "telegram", relevantContext, memoryContext);
+
+  // Acknowledge after 3s if Claude hasn't responded yet
+  let acknowledged = false;
+  const ackTimer = setTimeout(async () => {
+    acknowledged = true;
+    await ctx.reply("Working on it...").catch(() => {});
+  }, 3000);
+
   const rawResponse = await callClaude(enrichedPrompt);
+  clearTimeout(ackTimer);
 
   const response = await processMemoryIntents(supabase, rawResponse);
-
   await saveMessage("assistant", response, "telegram");
   await sendResponse(ctx, response);
 });
