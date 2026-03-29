@@ -34,6 +34,8 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER || "";
 const USER_PHONE_NUMBER = process.env.USER_PHONE_NUMBER || "";
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
 const BASE_URL =
   process.env.PHONE_WEBHOOK_URL || `http://35.178.39.179:${PORT}`;
 
@@ -199,15 +201,21 @@ async function processRecordingAsync(
   cleanupRecording(recordingSid);
 
   if (willBeSlow) {
-    console.log(`[phone] Calling back ${USER_PHONE_NUMBER} with answer`);
-    await twilioClient.calls.create({
-      to: USER_PHONE_NUMBER,
-      from: TWILIO_PHONE_NUMBER,
-      url: `${BASE_URL}/voice/callback?message=${encodeURIComponent(response)}`,
-      method: "POST" as const,
-      statusCallback: `${BASE_URL}/voice/status`,
-      statusCallbackEvent: ["completed"],
-    }).catch((err: unknown) => console.error("[phone] Callback call error:", err));
+    if (response.startsWith("Error:")) {
+      // Claude errored — send to Telegram instead of speaking the error aloud
+      console.log(`[phone] Callback error — routing to Telegram: ${response.substring(0, 80)}`);
+      await sendTelegram(`📞 *Phone asked:* "${transcription}"\n\n⚠️ Couldn't get an answer right now — ${response}`);
+    } else {
+      console.log(`[phone] Calling back ${USER_PHONE_NUMBER} with answer`);
+      await twilioClient.calls.create({
+        to: USER_PHONE_NUMBER,
+        from: TWILIO_PHONE_NUMBER,
+        url: `${BASE_URL}/voice/callback?message=${encodeURIComponent(response)}`,
+        method: "POST" as const,
+        statusCallback: `${BASE_URL}/voice/status`,
+        statusCallbackEvent: ["completed"],
+      }).catch((err: unknown) => console.error("[phone] Callback call error:", err));
+    }
   } else {
     pendingResponses.set(callSid, response);
   }
@@ -267,6 +275,15 @@ async function handleOutbound(
   return twimlResponse(
     sayAndRecord(message, `${BASE_URL}/voice/respond`)
   );
+}
+
+async function sendTelegram(message: string): Promise<void> {
+  if (!BOT_TOKEN || !CHAT_ID) return;
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CHAT_ID, text: message }),
+  }).catch(console.error);
 }
 
 /** Outbound callback — speaks the answer and hangs up. No further recording. */
