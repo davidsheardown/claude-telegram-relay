@@ -71,9 +71,10 @@ async function refreshCache(): Promise<void> {
     "If there are no events, say exactly: You have no events tomorrow. " +
     "Reply with just the summary, nothing else.";
 
+  // Must use Sonnet — Haiku skips MCP tools and can't access Google Calendar
   const [todayText, tomorrowText] = await Promise.all([
-    callClaude(todayPrompt, { model: "claude-haiku-4-5" }),
-    callClaude(tomorrowPrompt, { model: "claude-haiku-4-5" }),
+    callClaude(todayPrompt, { model: "claude-sonnet-4-6" }),
+    callClaude(tomorrowPrompt, { model: "claude-sonnet-4-6" }),
   ]);
 
   if (todayText.startsWith("Error:") || tomorrowText.startsWith("Error:")) {
